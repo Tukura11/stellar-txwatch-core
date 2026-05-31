@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use reqwest::Client;
 use tracing::info;
 use txwatch_config::AppConfig;
-use txwatch_notifier::{send_webhook, test_payload};
+use txwatch_notifier::{send_webhook, test_payload_with_network};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
@@ -75,7 +75,14 @@ async fn main() -> Result<()> {
         }
 
         Command::TestWebhook { url, label } => {
-            let payload = test_payload(&label, &url);
+            let cfg = AppConfig::from_file(&cli.config)?;
+            if cfg.contracts.is_empty() {
+                return Err(anyhow::anyhow!("config has no contracts; cannot derive network for test-webhook"));
+            }
+            let first_contract = &cfg.contracts[0];
+            let network_name = first_contract.network.as_str();
+            let horizon_base_url = first_contract.network.horizon_base_url();
+            let payload = test_payload_with_network(&label, &url, network_name, horizon_base_url);
             let client  = Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .build()

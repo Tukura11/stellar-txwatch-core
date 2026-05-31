@@ -82,21 +82,31 @@ pub async fn send_webhook(
 }
 
 /// Build a synthetic `AlertPayload` suitable for `test-webhook`.
+/// Uses the provided network name and horizon base URL, falling back to testnet defaults if not provided.
 pub fn test_payload(label: &str, webhook_url: &str) -> AlertPayload {
+    test_payload_with_network(label, webhook_url, "testnet", "https://horizon-testnet.stellar.org")
+}
+
+/// Build a synthetic `AlertPayload` with explicit network configuration.
+pub fn test_payload_with_network(label: &str, webhook_url: &str, network: &str, horizon_base_url: &str) -> AlertPayload {
     AlertPayload {
         label:            label.to_string(),
         contract_id:      "CTEST000000000000000000000000000000000000000000000000000".into(),
-        network:          "testnet".into(),
+        network:          network.into(),
         rule_triggered:   "TestWebhook".into(),
         transaction_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
         function_name:    Some("test".into()),
         amount_xlm:       None,
         timestamp:        Utc::now().timestamp(),
         horizon_link:     format!(
-            "https://horizon-testnet.stellar.org/transactions/\
-             0000000000000000000000000000000000000000000000000000000000000000"
+            "{}/transactions/\
+             0000000000000000000000000000000000000000000000000000000000000000",
+            horizon_base_url
         ),
-        explorer_link:    "https://stellar.expert/explorer/testnet/tx/0000000000000000000000000000000000000000000000000000000000000000".into(),
+        explorer_link:    format!(
+            "https://stellar.expert/explorer/{}/tx/0000000000000000000000000000000000000000000000000000000000000000",
+            network.to_lowercase()
+        ),
     }
     // suppress unused webhook_url warning — callers use it to POST
     // but we include it in the payload label for clarity
