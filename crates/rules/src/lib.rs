@@ -200,6 +200,7 @@ impl AlertPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
     use txwatch_config::AlertRule;
 
     fn make_tx(
@@ -368,6 +369,3 @@ mod tests {
     }
 }
 
-// bring chrono::Datelike into scope for the test above
-#[cfg(test)]
-use chrono::Datelike;

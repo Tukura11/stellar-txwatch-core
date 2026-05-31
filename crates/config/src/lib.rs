@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::{fs, path::Path};
+use std::{env, fs, path::Path};
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
@@ -121,7 +121,11 @@ pub struct WatchedContract {
     pub rules:       Vec<AlertRule>,
     pub webhook_url: String,
     /// Optional secret sent as X-TxWatch-Secret header on every webhook POST.
+    /// Supports `${ENV_VAR}` interpolation (e.g. `webhook_secret = "${MY_SECRET}"`).
     pub webhook_secret: Option<String>,
+    /// Override the Horizon base URL; never read from TOML — set programmatically in tests.
+    #[serde(skip, default)]
+    pub horizon_base_url_override: Option<String>,
 }
 
 impl WatchedContract {
@@ -168,14 +172,40 @@ pub struct AppConfig {
     pub contracts: Vec<WatchedContract>,
 }
 
+// ── Env-var interpolation ─────────────────────────────────────────────────────
+
+/// Resolves a `${VAR_NAME}` reference to the corresponding environment variable.
+/// Values that don't match the `${...}` pattern are returned unchanged.
+fn resolve_env_interpolation(value: &str) -> Result<String> {
+    match value
+        .strip_prefix("${")
+        .and_then(|s| s.strip_suffix('}'))
+    {
+        Some(var_name) => env::var(var_name)
+            .with_context(|| format!("env var '{}' referenced in config is not set", var_name)),
+        None => Ok(value.to_owned()),
+    }
+}
+
 impl AppConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("cannot read config file '{}'", path.display()))?;
-        let cfg: AppConfig = toml::from_str(&raw)
+        let mut cfg: AppConfig = toml::from_str(&raw)
             .with_context(|| format!("failed to parse config file '{}'", path.display()))?;
+        cfg.resolve_env_vars()?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Walks all contracts and resolves `${ENV_VAR}` references in string fields.
+    fn resolve_env_vars(&mut self) -> Result<()> {
+        for contract in &mut self.contracts {
+            if let Some(secret) = &contract.webhook_secret {
+                contract.webhook_secret = Some(resolve_env_interpolation(secret)?);
+            }
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -209,6 +239,7 @@ mod tests {
             rules:          vec![AlertRule::AnyTransaction],
             webhook_url:    "https://example.com/hook".into(),
             webhook_secret: None,
+            horizon_base_url_override: None,
         }
     }
 
@@ -301,5 +332,46 @@ mod tests {
         "#;
         let cfg: AppConfig = toml::from_str(raw).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn env_interpolation_resolves_set_var() {
+        std::env::set_var("TXWATCH_TEST_SECRET", "s3cr3t");
+        let result = resolve_env_interpolation("${TXWATCH_TEST_SECRET}").unwrap();
+        assert_eq!(result, "s3cr3t");
+        std::env::remove_var("TXWATCH_TEST_SECRET");
+    }
+
+    #[test]
+    fn env_interpolation_errors_on_missing_var() {
+        std::env::remove_var("TXWATCH_NONEXISTENT_VAR");
+        let result = resolve_env_interpolation("${TXWATCH_NONEXISTENT_VAR}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn env_interpolation_passthrough_for_plain_value() {
+        let result = resolve_env_interpolation("plain-secret").unwrap();
+        assert_eq!(result, "plain-secret");
+    }
+
+    #[test]
+    fn resolve_env_vars_expands_webhook_secret() {
+        std::env::set_var("TXWATCH_HOOK_SECRET", "abc123");
+        let mut cfg = AppConfig {
+            poll_interval_seconds: 5,
+            contracts: vec![WatchedContract {
+                label:          "Test".into(),
+                contract_id:    "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+                network:        Network::Testnet,
+                rules:          vec![AlertRule::AnyTransaction],
+                webhook_url:    "https://example.com/hook".into(),
+                webhook_secret: Some("${TXWATCH_HOOK_SECRET}".into()),
+                horizon_base_url_override: None,
+            }],
+        };
+        cfg.resolve_env_vars().unwrap();
+        assert_eq!(cfg.contracts[0].webhook_secret.as_deref(), Some("abc123"));
+        std::env::remove_var("TXWATCH_HOOK_SECRET");
     }
 }

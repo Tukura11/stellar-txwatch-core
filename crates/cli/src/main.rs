@@ -9,10 +9,19 @@ use txwatch_notifier::{send_webhook, test_payload};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("TXWATCH_GIT_SHA"),
+    " built ",
+    env!("TXWATCH_BUILD_TIMESTAMP"),
+    ")"
+);
+
 #[derive(Parser)]
 #[command(
     name    = "txwatch",
-    version = "0.1.0",
+    version = VERSION,
     about   = "Stellar Soroban contract monitor & webhook alert engine"
 )]
 struct Cli {
@@ -91,6 +100,7 @@ async fn main() -> Result<()> {
         Command::Watch => {
             let cfg = AppConfig::from_file(&cli.config)?;
             info!(
+                version        = VERSION,
                 contracts      = cfg.contracts.len(),
                 interval_secs  = cfg.poll_interval_seconds,
                 "starting TxWatch"

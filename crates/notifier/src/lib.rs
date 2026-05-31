@@ -92,10 +92,8 @@ pub fn test_payload(label: &str, webhook_url: &str) -> AlertPayload {
         function_name:    Some("test".into()),
         amount_xlm:       None,
         timestamp:        Utc::now().timestamp(),
-        horizon_link:     format!(
-            "https://horizon-testnet.stellar.org/transactions/\
-             0000000000000000000000000000000000000000000000000000000000000000"
-        ),
+        horizon_link:     "https://horizon-testnet.stellar.org/transactions/\
+             0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         explorer_link:    "https://stellar.expert/explorer/testnet/tx/0000000000000000000000000000000000000000000000000000000000000000".into(),
     }
     // suppress unused webhook_url warning — callers use it to POST

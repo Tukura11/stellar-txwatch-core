@@ -130,7 +130,10 @@ async fn poll_contract(
         .cloned()
         .unwrap_or_else(|| "now".to_string());
 
-    let base = contract.network.horizon_base_url();
+    let base = contract
+        .horizon_base_url_override
+        .as_deref()
+        .unwrap_or_else(|| contract.network.horizon_base_url());
     let url  = format!(
         "{}/accounts/{}/transactions?cursor={}&order=asc&limit=200",
         base, contract.contract_id, cursor
@@ -277,23 +280,6 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    #[allow(dead_code)]
-    fn tx_page(hash: &str, paging_token: &str, successful: bool) -> serde_json::Value {
-        serde_json::json!({
-            "_embedded": {
-                "records": [{
-                    "hash":         hash,
-                    "created_at":   "2024-01-15T12:00:00Z",
-                    "successful":   successful,
-                    "paging_token": paging_token,
-                    "fee_charged":  "100",
-                    "envelope_xdr": null,
-                    "result_xdr":   null
-                }]
-            }
-        })
-    }
 
     fn ops_page(function_name: &str) -> serde_json::Value {
         serde_json::json!({
