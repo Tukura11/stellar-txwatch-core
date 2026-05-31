@@ -270,6 +270,21 @@ mod tests {
     }
 
     #[test]
+    fn large_transfer_fires_at_exact_threshold() {
+        let tx = make_tx(true, None, Some(10_000 * 10_000_000));
+        let payloads = run(&[AlertRule::LargeTransfer { threshold_xlm: 10_000 }], &tx);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].amount_xlm, Some(10_000));
+    }
+
+    #[test]
+    fn large_transfer_does_not_fire_one_stroop_below_threshold() {
+        let tx = make_tx(true, None, Some(10_000 * 10_000_000 - 1));
+        let payloads = run(&[AlertRule::LargeTransfer { threshold_xlm: 10_000 }], &tx);
+        assert!(payloads.is_empty());
+    }
+
+    #[test]
     fn function_called_fires_on_match() {
         let tx = make_tx(true, Some("withdraw"), None);
         let payloads = run(
