@@ -79,6 +79,9 @@ pub struct AlertPayload {
     pub label:            String,
     pub contract_id:      String,
     pub network:          String,
+    /// Stable machine-readable rule variant name (e.g. "LargeTransfer", "HighFee").
+    pub rule_type:        String,
+    /// Human-readable rule description with parameters (e.g. "LargeTransfer(>=10000XLM)").
     pub rule_triggered:   String,
     pub transaction_hash: String,
     pub function_name:    Option<String>,
@@ -120,6 +123,7 @@ pub fn evaluate(
                     label:            label.to_string(),
                     contract_id:      contract_id.to_string(),
                     network:          network.to_string(),
+                    rule_type:        rule_type(rule),
                     rule_triggered:   rule_label(rule),
                     transaction_hash: tx.hash.clone(),
                     function_name:    tx.function_name.clone(),
@@ -188,6 +192,17 @@ fn rule_label(rule: &AlertRule) -> String {
             format!("AdminFunctionCalled([{}])", function_names.join(", "))
         }
         AlertRule::HighFee { threshold_stroops } => format!("HighFee(>={} stroops)", threshold_stroops),
+    }
+}
+
+fn rule_type(rule: &AlertRule) -> String {
+    match rule {
+        AlertRule::AnyTransaction          => "AnyTransaction".into(),
+        AlertRule::TransactionFailed       => "TransactionFailed".into(),
+        AlertRule::LargeTransfer { .. }   => "LargeTransfer".into(),
+        AlertRule::FunctionCalled { .. }  => "FunctionCalled".into(),
+        AlertRule::AdminFunctionCalled { .. } => "AdminFunctionCalled".into(),
+        AlertRule::HighFee { .. }         => "HighFee".into(),
     }
 }
 
