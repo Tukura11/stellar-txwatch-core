@@ -11,10 +11,20 @@ Matches every transaction that appears in the contract's Horizon history.
 
 **Use case:** full audit trail, low-volume contracts.
 
+```toml
+[[contracts.rules]]
+type = "AnyTransaction"
+```
+
 ### `TransactionFailed`
 Matches transactions where `successful = false`.
 
 **Use case:** detect reverted Soroban invocations or fee-bump failures.
+
+```toml
+[[contracts.rules]]
+type = "TransactionFailed"
+```
 
 ### `LargeTransfer`
 
@@ -28,6 +38,12 @@ The `amount_xlm` field in the webhook payload contains the actual transferred am
 **Note:** Amount is extracted from `payment` operation records. Soroban token transfers
 that do not produce a native `payment` operation will not populate `amount_xlm`.
 
+```toml
+[[contracts.rules]]
+type          = "LargeTransfer"
+threshold_xlm = 10000
+```
+
 ### `FunctionCalled`
 
 | Field           | Type   | Required | Description                          |
@@ -35,6 +51,12 @@ that do not produce a native `payment` operation will not populate `amount_xlm`.
 | `function_name` | string | yes      | Exact function name (case-sensitive) |
 
 Matches when the Soroban `invoke_host_function` operation calls exactly `function_name`.
+
+```toml
+[[contracts.rules]]
+type          = "FunctionCalled"
+function_name = "withdraw"
+```
 
 ### `AdminFunctionCalled`
 
@@ -45,6 +67,29 @@ Matches when the Soroban `invoke_host_function` operation calls exactly `functio
 Matches when the invoked function is any entry in `function_names`.
 Equivalent to multiple `FunctionCalled` rules but produces a single
 `AdminFunctionCalled([...])` label in the alert.
+
+```toml
+[[contracts.rules]]
+type           = "AdminFunctionCalled"
+function_names = ["set_admin", "upgrade", "initialize"]
+```
+
+### `HighFee`
+
+| Field                | Type | Required | Description                           |
+|----------------------|------|----------|---------------------------------------|
+| `threshold_stroops`  | u64  | yes      | Fee threshold in stroops (> 0)        |
+
+Matches when the transaction's total fee exceeds `threshold_stroops`.
+The `fee_charged` field in the webhook payload contains the actual fee paid in stroops.
+
+**Note:** Stroops are the smallest unit of XLM (1 XLM = 10,000,000 stroops).
+
+```toml
+[[contracts.rules]]
+type               = "HighFee"
+threshold_stroops  = 100000
+```
 
 ## Evaluation order
 
