@@ -86,6 +86,8 @@ pub struct AlertPayload {
     pub amount_xlm:       Option<u64>,
     /// Unix timestamp (seconds).
     pub timestamp:        i64,
+    /// ISO 8601 timestamp string.
+    pub timestamp_iso:    String,
     pub horizon_link:     String,
     /// Stellar Expert explorer link for the transaction.
     pub explorer_link:    String,
@@ -108,6 +110,7 @@ pub fn evaluate(
     let horizon_link  = format!("{}/transactions/{}", horizon_base, tx.hash);
     let explorer_link = format!("{}/tx/{}", explorer_base, tx.hash);
     let timestamp     = tx.timestamp.timestamp();
+    let timestamp_iso = tx.timestamp.to_rfc3339();
 
     rules
         .iter()
@@ -122,6 +125,7 @@ pub fn evaluate(
                     function_name:    tx.function_name.clone(),
                     amount_xlm:       tx.amount_stroops.map(|s| s / 10_000_000),
                     timestamp,
+                    timestamp_iso:    timestamp_iso.clone(),
                     horizon_link:     horizon_link.clone(),
                     explorer_link:    explorer_link.clone(),
                 }),
