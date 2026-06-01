@@ -290,6 +290,16 @@ mod tests {
     }
 
     #[test]
+    fn rule_label_formats_are_stable() {
+        assert_eq!(rule_label(&AlertRule::AnyTransaction), "AnyTransaction");
+        assert_eq!(rule_label(&AlertRule::TransactionFailed), "TransactionFailed");
+        assert_eq!(rule_label(&AlertRule::LargeTransfer { threshold_xlm: 10_000 }), "LargeTransfer(>=10000XLM)");
+        assert_eq!(rule_label(&AlertRule::FunctionCalled { function_name: "withdraw".into() }), "FunctionCalled(withdraw)");
+        assert_eq!(rule_label(&AlertRule::AdminFunctionCalled { function_names: vec!["set_admin".into(), "upgrade".into()] }), "AdminFunctionCalled([set_admin, upgrade])");
+        assert_eq!(rule_label(&AlertRule::HighFee { threshold_stroops: 10_000 }), "HighFee(>=10000 stroops)");
+    }
+
+    #[test]
     fn transaction_failed_fires_on_failure() {
         let tx = make_tx(false, &[], None);
         let payloads = run(&[AlertRule::TransactionFailed], &tx);
