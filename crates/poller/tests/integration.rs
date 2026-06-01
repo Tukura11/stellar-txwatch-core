@@ -11,7 +11,6 @@ mod helpers;
 
 use std::time::Duration;
 
-use reqwest::Client;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -73,6 +72,9 @@ async fn run_polls_once_and_fires_webhook() {
     let cfg = AppConfig {
         poll_interval_seconds: 1,
         contracts: vec![contract],
+        http_pool_max_idle_per_host: None,
+        http_tcp_keepalive_secs: None,
+        http_connection_verbose: None,
     };
 
     // Drive the loop for one full poll cycle (slightly more than the interval).
@@ -111,7 +113,7 @@ async fn any_transaction_fires_webhook() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::AnyTransaction],
@@ -191,7 +193,7 @@ async fn transaction_failed_rule_fires_only_on_failure() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::TransactionFailed],
@@ -241,7 +243,7 @@ async fn large_transfer_fires_above_threshold() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::LargeTransfer { threshold_xlm: 5_000 }],
@@ -282,7 +284,7 @@ async fn function_called_rule_fires_on_exact_match() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::FunctionCalled { function_name: "withdraw".into() }],
@@ -369,7 +371,7 @@ async fn high_fee_rule_fires_on_fee_charged() {
     Mock::given(method("GET"))
         .and(path("/transactions/fee_tx/operations"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(empty_page_json()),
+            ResponseTemplate::new(200).set_body_json(helpers::empty_page()),
         )
         .mount(&horizon)
         .await;
@@ -383,9 +385,9 @@ async fn high_fee_rule_fires_on_fee_charged() {
         .await;
 
     let client   = Client::new();
-    let contract = contract(
+    let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
-        vec![AlertRule::HighFee { threshold_stroops: 10_000 }],
+        vec![AlertRule::HighFee { threshold_stroops: 10_000, threshold_xlm: None }],
     );
 
     let tx = EnrichedTransaction::from_horizon(
@@ -398,7 +400,7 @@ async fn high_fee_rule_fires_on_fee_charged() {
             envelope_xdr: None,
             result_xdr: None,
         },
-        None,
+        vec![],
         None,
         None,
     ).unwrap();
@@ -419,4 +421,66 @@ async fn high_fee_rule_fires_on_fee_charged() {
     txwatch_notifier::send_webhook(&client, &contract.webhook_url, &payloads[0], None)
         .await
         .unwrap();
+}
+
+/// When run in dry-run mode, matched rules are logged but webhooks are not sent.
+#[tokio::test]
+async fn run_polls_once_and_skips_webhook_in_dry_run() {
+    use std::time::Duration;
+
+    let horizon  = MockServer::start().await;
+    let receiver = MockServer::start().await;
+
+    // First transactions request returns one tx.
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(helpers::tx_page("dryrun001", "500", true)),
+        )
+        .up_to_n_times(1)
+        .mount(&horizon)
+        .await;
+
+    // All subsequent transaction requests return an empty page.
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(helpers::empty_page()),
+        )
+        .mount(&horizon)
+        .await;
+
+    // Operations for the tx: no Soroban details needed.
+    Mock::given(method("GET"))
+        .and(path("/transactions/dryrun001/operations"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(helpers::empty_page()),
+        )
+        .mount(&horizon)
+        .await;
+
+    // Webhook receiver: expect exactly 0 POSTs when dry-run is enabled.
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&receiver)
+        .await;
+
+    let mut contract = helpers::contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::AnyTransaction],
+    );
+    contract.horizon_base_url_override = Some(horizon.uri());
+
+    let cfg = AppConfig {
+        poll_interval_seconds: 1,
+        contracts: vec![contract],
+    };
+
+    // Drive the loop for one full poll cycle (slightly more than the interval).
+    let _ = tokio::time::timeout(Duration::from_millis(1500), txwatch_poller::run_with(cfg, true)).await;
+
+    // MockServer drop verifies that 0 webhooks were received.
 }

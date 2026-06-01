@@ -1685,7 +1685,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+ "serde_json",
  "toml",
+ "url",
 ]
 
 [[package]]
@@ -1693,6 +1695,7 @@ name = "txwatch-notifier"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "reqwest",
  "serde_json",
  "tokio",

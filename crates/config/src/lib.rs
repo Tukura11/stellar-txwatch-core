@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde_path_to_error::Deserializer as PathDeserializer;
 use std::{fmt, fs, path::Path};
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
     Mainnet,
@@ -58,7 +60,7 @@ impl fmt::Display for Network {
 
 // ── AlertRule ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum AlertRule {
     AnyTransaction,
@@ -66,8 +68,15 @@ pub enum AlertRule {
     LargeTransfer       { threshold_xlm: u64 },
     FunctionCalled      { function_name: String },
     AdminFunctionCalled { function_names: Vec<String> },
-    /// Fires when the transaction's fee (in stroops) exceeds the threshold.
-    HighFee             { threshold_stroops: u64 },
+    /// Fires when the transaction's fee exceeds the threshold.
+    /// Specify either `threshold_stroops` (raw stroops) or `threshold_xlm` (whole XLM,
+    /// converted to stroops during validation); the two are mutually exclusive.
+    HighFee {
+        #[serde(default)]
+        threshold_stroops: u64,
+        #[serde(default)]
+        threshold_xlm: Option<u64>,
+    },
 }
 
 impl AlertRule {
@@ -107,12 +116,30 @@ impl AlertRule {
                 }
             }
             AlertRule::AnyTransaction | AlertRule::TransactionFailed => {}
-            AlertRule::HighFee { threshold_stroops } => {
-                if *threshold_stroops == 0 {
-                    bail!(
+            AlertRule::HighFee { threshold_stroops, threshold_xlm } => {
+                match (*threshold_xlm, *threshold_stroops) {
+                    (Some(_), s) if s > 0 => bail!(
+                        "contract '{}': HighFee: specify either threshold_stroops or \
+                         threshold_xlm, not both",
+                        contract_label
+                    ),
+                    (None, 0) => bail!(
                         "contract '{}': HighFee threshold_stroops must be > 0",
                         contract_label
-                    );
+                    ),
+                    (Some(0), _) => bail!(
+                        "contract '{}': HighFee threshold_xlm must be > 0",
+                        contract_label
+                    ),
+                    (Some(xlm), 0) => {
+                        *threshold_stroops = xlm.checked_mul(10_000_000).with_context(|| {
+                            format!(
+                                "contract '{}': HighFee threshold_xlm overflow",
+                                contract_label
+                            )
+                        })?;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -123,6 +150,7 @@ impl AlertRule {
 // ── WatchedContract ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatchedContract {
     pub label:       String,
     pub contract_id: String,
@@ -197,6 +225,7 @@ impl WatchedContract {
 pub const MAX_CONTRACTS: usize = 100;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub poll_interval_seconds: u64,
     pub contracts: Vec<WatchedContract>,
@@ -225,6 +254,24 @@ fn default_http_tcp_keepalive_secs() -> Option<u64> {
     None
 }
 
+fn deserialize_toml_with_field_context<'de, T>(raw: &'de str, path: &Path) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let mut deserializer = toml::Deserializer::new(raw);
+    let mut path_deserializer = PathDeserializer::new(&mut deserializer);
+    T::deserialize(&mut path_deserializer).map_err(|error| {
+        let path = error.path().to_string();
+        let inner = error.into_inner();
+        let message = if path.is_empty() {
+            inner.to_string()
+        } else {
+            format!("{} (field: {})", inner, path)
+        };
+        anyhow!(message)
+    })
+}
+
 // ── Env-var interpolation ─────────────────────────────────────────────────────
 
 /// Resolves a `${VAR_NAME}` reference to the corresponding environment variable.
@@ -244,11 +291,21 @@ impl AppConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("cannot read config file '{}'", path.display()))?;
-        let mut cfg: AppConfig = toml::from_str(&raw)
+        let mut cfg: AppConfig = deserialize_toml_with_field_context(&raw, path)
             .with_context(|| format!("failed to parse config file '{}'", path.display()))?;
         cfg.resolve_env_vars()?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Resolve `${ENV_VAR}` interpolation in `webhook_secret` fields.
+    fn resolve_env_vars(&mut self) -> Result<()> {
+        for contract in &mut self.contracts {
+            if let Some(secret) = &contract.webhook_secret {
+                contract.webhook_secret = Some(resolve_env_interpolation(secret)?);
+            }
+        }
+        Ok(())
     }
 
     pub fn validate(&mut self) -> Result<()> {
@@ -430,12 +487,70 @@ mod tests {
     #[test]
     fn rejects_duplicate_labels() {
         let c = valid_contract();
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             poll_interval_seconds: 10,
             contracts: vec![c.clone(), c],
+            http_pool_max_idle_per_host: None,
+            http_tcp_keepalive_secs: None,
+            http_connection_verbose: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("duplicate contract label"));
+    }
+
+    // ── Issue #94: AppConfig::validate rejects empty contracts ────────────────
+
+    #[test]
+    fn appconfig_validate_rejects_empty_contracts() {
+        let mut cfg = AppConfig {
+            poll_interval_seconds: 10,
+            contracts: vec![],
+            http_pool_max_idle_per_host: None,
+            http_tcp_keepalive_secs: None,
+            http_connection_verbose: None,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("at least one"),
+            "error should mention 'at least one', got: {}",
+            err
+        );
+    }
+
+    // ── Issue #96: HighFee threshold_xlm convenience alternative ─────────────
+
+    #[test]
+    fn high_fee_threshold_xlm_normalises_to_stroops() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 0, threshold_xlm: Some(1) }];
+        c.validate().unwrap();
+        if let AlertRule::HighFee { threshold_stroops, .. } = &c.rules[0] {
+            assert_eq!(*threshold_stroops, 10_000_000, "1 XLM should become 10_000_000 stroops");
+        } else {
+            panic!("expected HighFee");
+        }
+    }
+
+    #[test]
+    fn high_fee_threshold_xlm_zero_is_rejected() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 0, threshold_xlm: Some(0) }];
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn high_fee_both_thresholds_is_rejected() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 100, threshold_xlm: Some(1) }];
+        let err = c.validate().unwrap_err();
+        assert!(err.to_string().contains("not both"));
+    }
+
+    #[test]
+    fn high_fee_neither_threshold_is_rejected() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 0, threshold_xlm: None }];
+        assert!(c.validate().is_err());
     }
 
     #[test]
@@ -461,5 +576,29 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("txwatch_nonexistent_test_config.toml"));
+    }
+
+    #[test]
+    fn from_file_returns_err_for_wrong_type_field() {
+        let path = std::env::temp_dir().join("txwatch_wrong_type_field_test_config.toml");
+        let raw = r#"
+            poll_interval_seconds = "ten"
+            [[contracts]]
+            label = "x"
+            contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            network = "testnet"
+            webhook_url = "https://example.com/hook"
+            [[contracts.rules]]
+            type = "AnyTransaction"
+        "#;
+
+        std::fs::write(&path, raw).unwrap();
+        let result = AppConfig::from_file(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("failed to parse config file"));
+        assert!(error_msg.contains("field: poll_interval_seconds"));
     }
 }
