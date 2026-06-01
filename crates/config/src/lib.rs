@@ -151,9 +151,24 @@ impl WatchedContract {
             );
         }
 
-        if !self.webhook_url.starts_with("http://") && !self.webhook_url.starts_with("https://") {
+        let parsed_url = Url::parse(&self.webhook_url).map_err(|e| {
+            anyhow::anyhow!(
+                "contract '{}': webhook_url '{}' is not a valid URL: {}",
+                self.label,
+                self.webhook_url,
+                e
+            )
+        })?;
+        if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
             bail!(
-                "contract '{}': webhook_url '{}' must start with http:// or https://",
+                "contract '{}': webhook_url '{}' must use http or https scheme",
+                self.label,
+                self.webhook_url
+            );
+        }
+        if parsed_url.host().is_none() {
+            bail!(
+                "contract '{}': webhook_url '{}' has no host",
                 self.label,
                 self.webhook_url
             );
@@ -173,6 +188,11 @@ impl WatchedContract {
 }
 
 // ── AppConfig ─────────────────────────────────────────────────────────────────
+
+/// Maximum number of watched contracts allowed in a single configuration.
+/// Exceeding this limit would create too many concurrent Horizon polling tasks,
+/// potentially exhausting memory or file descriptors.
+pub const MAX_CONTRACTS: usize = 100;
 
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
@@ -295,6 +315,52 @@ mod tests {
         let mut c = valid_contract();
         c.webhook_url = "ftp://bad".into();
         assert!(c.validate().is_err());
+    }
+
+    // ── Issue #80: full URL validation ────────────────────────────────────────
+
+    #[test]
+    fn rejects_webhook_url_with_no_host() {
+        // "https://" alone has no host — previously passed the prefix check
+        let mut c = valid_contract();
+        c.webhook_url = "https://".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_webhook_url_with_spaces() {
+        // Spaces make the URL unparseable
+        let mut c = valid_contract();
+        c.webhook_url = "https://example .com/hook".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_webhook_url_that_is_not_a_url() {
+        let mut c = valid_contract();
+        c.webhook_url = "not-a-url-at-all".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_webhook_url_with_ftp_scheme() {
+        let mut c = valid_contract();
+        c.webhook_url = "ftp://files.example.com/hook".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_valid_http_webhook_url() {
+        let mut c = valid_contract();
+        c.webhook_url = "http://hooks.example.com/my-webhook".into();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_valid_https_webhook_url_with_path_and_query() {
+        let mut c = valid_contract();
+        c.webhook_url = "https://hooks.example.com/alerts?token=abc123".into();
+        assert!(c.validate().is_ok());
     }
 
     #[test]

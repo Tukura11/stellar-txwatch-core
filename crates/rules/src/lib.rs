@@ -55,7 +55,7 @@ impl EnrichedTransaction {
     /// Build from a raw Horizon record plus optional Soroban operation details.
     pub fn from_horizon(
         tx: HorizonTransaction,
-        function_name: Option<String>,
+        function_names: Vec<String>,
         amount_stroops: Option<u64>,
         fee_charged_stroops: Option<u64>,
     ) -> Result<Self> {
@@ -71,7 +71,7 @@ impl EnrichedTransaction {
             timestamp,
             successful: tx.successful,
             paging_token: tx.paging_token,
-            function_name,
+            function_names,
             amount_stroops,
             fee_charged_stroops: fee_charged_stroops.or_else(|| {
                 tx.fee_charged
@@ -133,7 +133,8 @@ pub fn evaluate(
                     rule_type:        rule_type(rule),
                     rule_triggered:   rule_label(rule),
                     transaction_hash: tx.hash.clone(),
-                    function_name:    tx.function_name.clone(),
+                    function_name:    tx.function_names.first().cloned(),
+                    function_names:   tx.function_names.clone(),
                     amount_xlm:       tx.amount_stroops.map(|s| s / 10_000_000),
                     fee_charged_stroops: tx.fee_charged_stroops,
                     timestamp,
@@ -172,10 +173,9 @@ fn eval_rule(rule: &AlertRule, tx: &EnrichedTransaction) -> Result<bool> {
         }
 
         AlertRule::FunctionCalled { function_name } => tx
-            .function_name
-            .as_deref()
-            .map(|f| f == function_name.as_str())
-            .unwrap_or(false),
+            .function_names
+            .iter()
+            .any(|f| f == function_name.as_str()),
 
         AlertRule::AdminFunctionCalled { function_names } => tx
             .function_name
@@ -239,7 +239,7 @@ mod tests {
 
     fn make_tx(
         successful: bool,
-        function_name: Option<&str>,
+        function_names: &[&str],
         amount_stroops: Option<u64>,
     ) -> EnrichedTransaction {
         EnrichedTransaction {
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn any_transaction_always_fires() {
-        let tx = make_tx(true, None, None);
+        let tx = make_tx(true, &[], None);
         let payloads = run(&[AlertRule::AnyTransaction], &tx);
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0].rule_triggered, "AnyTransaction");
@@ -283,14 +283,14 @@ mod tests {
 
     #[test]
     fn transaction_failed_fires_on_failure() {
-        let tx = make_tx(false, None, None);
+        let tx = make_tx(false, &[], None);
         let payloads = run(&[AlertRule::TransactionFailed], &tx);
         assert_eq!(payloads.len(), 1);
     }
 
     #[test]
     fn transaction_failed_does_not_fire_on_success() {
-        let tx = make_tx(true, None, None);
+        let tx = make_tx(true, &[], None);
         let payloads = run(&[AlertRule::TransactionFailed], &tx);
         assert!(payloads.is_empty());
     }
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn large_transfer_no_amount_does_not_fire() {
-        let tx = make_tx(true, None, None);
+        let tx = make_tx(true, &[], None);
         let payloads = run(&[AlertRule::LargeTransfer { threshold_xlm: 1 }], &tx);
         assert!(payloads.is_empty());
     }
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn function_called_fires_on_match() {
-        let tx = make_tx(true, Some("withdraw"), None);
+        let tx = make_tx(true, &["withdraw"], None);
         let payloads = run(
             &[AlertRule::FunctionCalled {
                 function_name: "withdraw".into(),
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn function_called_does_not_fire_on_mismatch() {
-        let tx = make_tx(true, Some("deposit"), None);
+        let tx = make_tx(true, &["deposit"], None);
         let payloads = run(
             &[AlertRule::FunctionCalled {
                 function_name: "withdraw".into(),
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn admin_function_called_fires_on_any_match() {
-        let tx = make_tx(true, Some("upgrade"), None);
+        let tx = make_tx(true, &["upgrade"], None);
         let payloads = run(
             &[AlertRule::AdminFunctionCalled {
                 function_names: vec!["set_admin".into(), "upgrade".into()],
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn multiple_rules_can_fire_on_same_tx() {
-        let tx = make_tx(false, Some("set_admin"), Some(200_000_000_000));
+        let tx = make_tx(false, &["set_admin"], Some(200_000_000_000));
         let rules = vec![
             AlertRule::AnyTransaction,
             AlertRule::TransactionFailed,
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn horizon_link_is_correct() {
-        let tx = make_tx(true, None, None);
+        let tx = make_tx(true, &[], None);
         let payloads = run(&[AlertRule::AnyTransaction], &tx);
         assert_eq!(
             payloads[0].horizon_link,
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn high_fee_fires_at_threshold() {
-        let mut tx = make_tx(true, None, None);
+        let mut tx = make_tx(true, &[], None);
         tx.fee_charged_stroops = Some(10_000);
         let payloads = run(
             &[AlertRule::HighFee {
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn high_fee_does_not_fire_below_threshold() {
-        let mut tx = make_tx(true, None, None);
+        let mut tx = make_tx(true, &[], None);
         tx.fee_charged_stroops = Some(9_999);
         let payloads = run(
             &[AlertRule::HighFee {
@@ -480,7 +480,53 @@ mod tests {
             envelope_xdr: None,
             result_xdr: None,
         };
-        let enriched = EnrichedTransaction::from_horizon(raw, None, None, None).unwrap();
+        let enriched = EnrichedTransaction::from_horizon(raw, vec![], None, None).unwrap();
         assert_eq!(enriched.timestamp.year(), 2024);
+    }
+
+    // ── Issue #77: multiple invoke_host_function ops ──────────────────────────
+
+    #[test]
+    fn function_called_fires_when_matching_name_is_second_in_list() {
+        // Transaction has two Soroban invocations; rule should match the second
+        let tx = make_tx(true, &["deposit", "withdraw"], None);
+        let payloads = run(
+            &[AlertRule::FunctionCalled { function_name: "withdraw".into() }],
+            &tx,
+        );
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].function_names, vec!["deposit", "withdraw"]);
+    }
+
+    #[test]
+    fn function_called_does_not_fire_when_no_names_match() {
+        let tx = make_tx(true, &["deposit", "transfer"], None);
+        let payloads = run(
+            &[AlertRule::FunctionCalled { function_name: "withdraw".into() }],
+            &tx,
+        );
+        assert!(payloads.is_empty());
+    }
+
+    #[test]
+    fn admin_function_called_fires_on_any_of_multiple_invocations() {
+        // Two invocations; only the second is an admin function
+        let tx = make_tx(true, &["transfer", "set_admin"], None);
+        let payloads = run(
+            &[AlertRule::AdminFunctionCalled {
+                function_names: vec!["set_admin".into(), "upgrade".into()],
+            }],
+            &tx,
+        );
+        assert_eq!(payloads.len(), 1);
+    }
+
+    #[test]
+    fn payload_function_names_contains_all_invocations() {
+        let tx = make_tx(true, &["foo", "bar", "baz"], None);
+        let payloads = run(&[AlertRule::AnyTransaction], &tx);
+        assert_eq!(payloads[0].function_names, vec!["foo", "bar", "baz"]);
+        // function_name (singular) is the first for backward compat
+        assert_eq!(payloads[0].function_name.as_deref(), Some("foo"));
     }
 }

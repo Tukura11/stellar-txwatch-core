@@ -6,7 +6,9 @@ Config is a TOML file passed via `--config` (default: `config/example.toml`).
 
 | Field                   | Type | Required | Description                           |
 |-------------------------|------|----------|---------------------------------------|
-| `poll_interval_seconds` | u64  | yes      | How often to poll Horizon (seconds). Must be > 0. |
+| `poll_interval_seconds` | u64  | yes      | How often to poll Horizon (seconds). Must be > 0 and ≤ 3600. |
+
+> **Contract limit:** A maximum of **100** `[[contracts]]` entries are allowed per configuration file. Exceeding this limit is rejected at startup to prevent exhausting memory or file descriptors from too many concurrent Horizon polling tasks.
 
 ## `[[contracts]]`
 
@@ -95,11 +97,16 @@ function_names = ["set_admin", "upgrade", "initialize"]
   "rule_triggered":   "LargeTransfer(>=10000XLM)",
   "transaction_hash": "abc123...",
   "function_name":    "transfer",
+  "function_names":   ["transfer"],
   "amount_xlm":       15000,
   "timestamp":        1705316096,
-  "horizon_link":     "https://horizon-testnet.stellar.org/transactions/abc123..."
+  "horizon_link":     "https://horizon-testnet.stellar.org/transactions/abc123...",
+  "explorer_link":    "https://stellar.expert/explorer/testnet/tx/abc123..."
 }
 ```
+
+- `function_name` — the first invoked Soroban function name (present for backward compatibility).
+- `function_names` — all Soroban function names invoked in the transaction (one per `invoke_host_function` operation). Most transactions have zero or one entry.
 
 ## Environment variables
 

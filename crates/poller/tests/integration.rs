@@ -137,7 +137,7 @@ async fn any_transaction_fires_webhook() {
         // Consume the operations response to satisfy the mock expectation.
         let _ = client.get(&ops_url).send().await.unwrap().bytes().await.unwrap();
 
-        let enriched = EnrichedTransaction::from_horizon(raw, None, None, None).unwrap();
+        let enriched = EnrichedTransaction::from_horizon(raw, vec![], None, None).unwrap();
         let payloads = evaluate(
             &contract.label,
             &contract.contract_id,
@@ -204,7 +204,7 @@ async fn transaction_failed_rule_fires_only_on_failure() {
                 successful: true, paging_token: "1".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            None, None, None,
+            vec![], None, None,
         ).unwrap(),
         EnrichedTransaction::from_horizon(
             txwatch_rules::HorizonTransaction {
@@ -212,7 +212,7 @@ async fn transaction_failed_rule_fires_only_on_failure() {
                 successful: false, paging_token: "2".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            None, None, None,
+            vec![], None, None,
         ).unwrap(),
     ];
 
@@ -253,7 +253,7 @@ async fn large_transfer_fires_above_threshold() {
             successful: true, paging_token: "1".into(),
             fee_charged: None, envelope_xdr: None, result_xdr: None,
         },
-        None,
+        vec![],
         Some(100_000_000_000),
         None,
     ).unwrap();
@@ -295,7 +295,7 @@ async fn function_called_rule_fires_on_exact_match() {
                 successful: true, paging_token: "1".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            Some("deposit".into()), None, None,
+            vec!["deposit".into()], None, None,
         ).unwrap(),
         EnrichedTransaction::from_horizon(
             txwatch_rules::HorizonTransaction {
@@ -303,7 +303,7 @@ async fn function_called_rule_fires_on_exact_match() {
                 successful: true, paging_token: "2".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            Some("withdraw".into()), None, None,
+            vec!["withdraw".into()], None, None,
         ).unwrap(),
     ];
 

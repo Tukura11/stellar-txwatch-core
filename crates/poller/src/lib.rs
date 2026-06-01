@@ -196,7 +196,7 @@ async fn poll_contract(
         // even when op enrichment fails (for example, Horizon /operations returns 500).
         cursors.insert(contract.contract_id.clone(), paging_token.clone());
 
-        let (function_name, amount_stroops) =
+        let (function_names, amount_stroops) =
             match fetch_soroban_details(client, base, &tx_hash).await {
                 Ok(details) => details,
                 Err(e) => {
@@ -206,11 +206,11 @@ async fn poll_contract(
                         error    = %e,
                         "could not fetch operation details — evaluating rules without them"
                     );
-                    (None, None)
+                    (Vec::new(), None)
                 }
             };
 
-        let enriched = match EnrichedTransaction::from_horizon(raw_tx, function_name, amount_stroops, None) {
+        let enriched = match EnrichedTransaction::from_horizon(raw_tx, function_names, amount_stroops, None) {
             Ok(t)  => t,
             Err(e) => {
                 warn!(
@@ -278,7 +278,7 @@ async fn fetch_soroban_details(
     client:  &Client,
     base:    &str,
     tx_hash: &str,
-) -> Result<(Option<String>, Option<u64>)> {
+) -> Result<(Vec<String>, Option<u64>)> {
     let url = format!("{}/transactions/{}/operations", base, tx_hash);
 
     let page: OperationsPage = client
@@ -290,25 +290,29 @@ async fn fetch_soroban_details(
         .await
         .with_context(|| format!("failed to parse operations from {}", url))?;
 
-    let mut function_name:  Option<String> = None;
-    let mut amount_stroops: Option<u64>    = None;
+    let mut function_names: Vec<String> = Vec::new();
+    let mut total_stroops:  u64         = 0;
+    let mut has_payment:    bool        = false;
 
     for op in page._embedded.records {
         if op.op_type == "invoke_host_function" {
             if let Some(f) = op.function {
-                function_name = Some(f);
+                function_names.push(f);
             }
         }
         if op.op_type == "payment" {
             if let Some(amt_str) = op.amount {
                 if let Ok(xlm) = amt_str.parse::<f64>() {
-                    amount_stroops = Some((xlm * 10_000_000.0) as u64);
+                    total_stroops = total_stroops.saturating_add((xlm * 10_000_000.0) as u64);
+                    has_payment = true;
                 }
             }
         }
     }
 
-    Ok((function_name, amount_stroops))
+    let amount_stroops = if has_payment { Some(total_stroops) } else { None };
+
+    Ok((function_names, amount_stroops))
 }
 
 // ── Startup log field helpers (for testing) ──────────────────────────────────
@@ -380,10 +384,10 @@ mod tests {
             .await;
 
         let client = Client::new();
-        let (fn_name, amount) =
+        let (fn_names, amount) =
             fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
 
-        assert_eq!(fn_name.as_deref(), Some("withdraw"));
+        assert_eq!(fn_names, vec!["withdraw"]);
         assert!(amount.is_none());
     }
 
@@ -400,10 +404,10 @@ mod tests {
             .await;
 
         let client = Client::new();
-        let (fn_name, amount) =
+        let (fn_names, amount) =
             fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
 
-        assert!(fn_name.is_none());
+        assert!(fn_names.is_empty());
         assert_eq!(amount, Some(10_000_000_000));
     }
 
@@ -418,10 +422,10 @@ mod tests {
             .await;
 
         let client = Client::new();
-        let (fn_name, amount) =
+        let (fn_names, amount) =
             fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
 
-        assert!(fn_name.is_none());
+        assert!(fn_names.is_empty());
         assert!(amount.is_none());
     }
 
