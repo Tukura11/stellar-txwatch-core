@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::{fs, path::Path};
+use std::{fmt, fs, path::Path};
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,12 @@ impl Network {
             Network::Testnet   => "https://stellar.expert/explorer/testnet",
             Network::Futurenet => "https://stellar.expert/explorer/futurenet",
         }
+    }
+}
+
+impl fmt::Display for Network {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -166,6 +172,29 @@ impl WatchedContract {
 pub struct AppConfig {
     pub poll_interval_seconds: u64,
     pub contracts: Vec<WatchedContract>,
+    /// Maximum number of idle connections per host in the HTTP connection pool.
+    /// Lower values reduce memory usage; higher values improve throughput for many contracts.
+    /// Default: 10.
+    #[serde(default = "default_http_pool_max_idle_per_host")]
+    pub http_pool_max_idle_per_host: Option<usize>,
+    /// TCP keepalive interval in seconds for idle HTTP connections.
+    /// Helps detect stalled connections quickly; 0 disables keepalive.
+    /// Default: 30 seconds.
+    #[serde(default = "default_http_tcp_keepalive_secs")]
+    pub http_tcp_keepalive_secs: Option<u64>,
+    /// Enable verbose output for HTTP connection pool debug information.
+    /// Only useful for troubleshooting connection issues.
+    /// Default: false.
+    #[serde(default)]
+    pub http_connection_verbose: Option<bool>,
+}
+
+fn default_http_pool_max_idle_per_host() -> Option<usize> {
+    None
+}
+
+fn default_http_tcp_keepalive_secs() -> Option<u64> {
+    None
 }
 
 impl AppConfig {
@@ -190,6 +219,12 @@ impl AppConfig {
         }
         for contract in &self.contracts {
             contract.validate()?;
+        }
+        let mut seen = std::collections::HashSet::new();
+        for contract in &self.contracts {
+            if !seen.insert(&contract.label) {
+                bail!("duplicate contract label '{}'", contract.label);
+            }
         }
         Ok(())
     }
@@ -285,6 +320,17 @@ mod tests {
     fn network_explorer_urls() {
         assert!(Network::Mainnet.explorer_base_url().contains("public"));
         assert!(Network::Testnet.explorer_base_url().contains("testnet"));
+    }
+
+    #[test]
+    fn rejects_duplicate_labels() {
+        let c = valid_contract();
+        let cfg = AppConfig {
+            poll_interval_seconds: 10,
+            contracts: vec![c.clone(), c],
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("duplicate contract label"));
     }
 
     #[test]

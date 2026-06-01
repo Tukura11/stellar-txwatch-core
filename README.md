@@ -92,6 +92,30 @@ Set `RUST_LOG=debug` for verbose output.
 
 ---
 
+## Docker
+
+Build the image:
+
+```bash
+docker build -t txwatch .
+```
+
+Run with a config file:
+
+```bash
+docker run -v $(pwd)/config.toml:/config.toml txwatch --config /config.toml watch
+```
+
+Or validate your config:
+
+```bash
+docker run -v $(pwd)/config.toml:/config.toml txwatch --config /config.toml validate
+```
+
+For local development with webhook testing, see [Local Development with Docker Compose](#local-development-with-docker-compose) in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## CLI
 
 ```
@@ -155,14 +179,21 @@ See [docs/alert-rules.md](docs/alert-rules.md) for full details.
   "label":            "My Escrow Contract",
   "contract_id":      "CAAA...",
   "network":          "testnet",
+  "rule_type":        "LargeTransfer",
   "rule_triggered":   "LargeTransfer(>=10000XLM)",
   "transaction_hash": "abc123...",
   "function_name":    "transfer",
   "amount_xlm":       15000,
+  "fee_charged_stroops": 50000,
   "timestamp":        1705316096,
+  "timestamp_iso":    "2024-01-15T12:00:00Z",
   "horizon_link":     "https://horizon-testnet.stellar.org/transactions/abc123..."
 }
 ```
+
+**Fields:**
+- `rule_type` — stable machine-readable rule variant (e.g. `"LargeTransfer"`, `"HighFee"`); use this for programmatic routing
+- `rule_triggered` — human-readable rule description with parameters (e.g. `"LargeTransfer(>=10000XLM)"`); use this for display
 
 `horizon_link` is a direct URL to the transaction on Horizon — paste it into a browser
 or the [Stellar Expert explorer](https://stellar.expert) to inspect the full XDR.

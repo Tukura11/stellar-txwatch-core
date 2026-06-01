@@ -345,78 +345,86 @@ async fn cursor_advances_after_each_transaction() {
     assert_eq!(cursors.get(contract_id).map(String::as_str), Some("300"));
 }
 
-/// Two contracts maintain independent cursors across a poll cycle.
+/// HighFee rule fires when fee_charged from Horizon response exceeds threshold.
 #[tokio::test]
-async fn multiple_contracts_maintain_independent_cursors() {
-    let horizon = MockServer::start().await;
+async fn high_fee_rule_fires_on_fee_charged() {
+    let horizon  = MockServer::start().await;
+    let receiver = MockServer::start().await;
 
-    let contract_a_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    let contract_b_id = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
-
-    // Mock: contract A returns transaction with paging_token "token_a"
+    // Horizon: transaction with fee_charged: "50000" (stroops)
     Mock::given(method("GET"))
-        .and(path_regex(format!("/accounts/{}/transactions", contract_a_id).as_str()))
+        .and(path_regex("/accounts/.*/transactions"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(tx_page_json("hash_a", "token_a", true)),
+                .set_body_json(serde_json::json!({
+                    "_embedded": {
+                        "records": [{
+                            "hash":         "fee_tx",
+                            "created_at":   "2024-06-01T10:00:00Z",
+                            "successful":   true,
+                            "paging_token": "1",
+                            "fee_charged":  "50000",
+                            "envelope_xdr": null,
+                            "result_xdr":   null
+                        }]
+                    }
+                })),
         )
         .mount(&horizon)
         .await;
 
-    // Mock: contract B returns transaction with paging_token "token_b"
+    // Horizon: operations for that transaction (empty, no Soroban)
     Mock::given(method("GET"))
-        .and(path_regex(format!("/accounts/{}/transactions", contract_b_id).as_str()))
+        .and(path("/transactions/fee_tx/operations"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(tx_page_json("hash_b", "token_b", true)),
+            ResponseTemplate::new(200).set_body_json(empty_page_json()),
         )
         .mount(&horizon)
         .await;
 
-    // Mock: operations for both contracts return empty (no Soroban details)
-    Mock::given(method("GET"))
-        .and(path_regex("/transactions/.*/operations"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page_json()))
-        .mount(&horizon)
+    // Webhook receiver: expect exactly 1 POST (HighFee fires)
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&receiver)
         .await;
 
-    // Simulate poller cursors and contract definitions
-    let mut cursors: HashMap<String, String> = HashMap::new();
-    cursors.insert(contract_a_id.to_string(), "now".to_string());
-    cursors.insert(contract_b_id.to_string(), "now".to_string());
-
-    let client = Client::new();
-
-    // Fetch for contract A
-    let url_a = format!(
-        "{}/accounts/{}/transactions?cursor=now&order=asc&limit=200",
-        horizon.uri(),
-        contract_a_id
+    let client   = Client::new();
+    let contract = contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::HighFee { threshold_stroops: 10_000 }],
     );
-    #[derive(serde::Deserialize)]
-    struct Page { _embedded: Emb }
-    #[derive(serde::Deserialize)]
-    struct Emb  { records: Vec<txwatch_rules::HorizonTransaction> }
 
-    let page_a: Page = client.get(&url_a).send().await.unwrap().json().await.unwrap();
-    if !page_a._embedded.records.is_empty() {
-        let token = page_a._embedded.records[0].paging_token.clone();
-        cursors.insert(contract_a_id.to_string(), token);
-    }
+    let tx = EnrichedTransaction::from_horizon(
+        txwatch_rules::HorizonTransaction {
+            hash: "fee_tx".into(),
+            created_at: "2024-06-01T10:00:00Z".into(),
+            successful: true,
+            paging_token: "1".into(),
+            fee_charged: Some("50000".into()),
+            envelope_xdr: None,
+            result_xdr: None,
+        },
+        None,
+        None,
+        None,
+    ).unwrap();
 
-    // Fetch for contract B
-    let url_b = format!(
-        "{}/accounts/{}/transactions?cursor=now&order=asc&limit=200",
-        horizon.uri(),
-        contract_b_id
+    let payloads = evaluate(
+        &contract.label,
+        &contract.contract_id,
+        contract.network.as_str(),
+        &horizon.uri(),
+        "https://stellar.expert/explorer/testnet",
+        &contract.rules,
+        &tx,
     );
-    let page_b: Page = client.get(&url_b).send().await.unwrap().json().await.unwrap();
-    if !page_b._embedded.records.is_empty() {
-        let token = page_b._embedded.records[0].paging_token.clone();
-        cursors.insert(contract_b_id.to_string(), token);
-    }
+    assert_eq!(payloads.len(), 1);
+    assert!(payloads[0].rule_triggered.contains("HighFee"));
+    assert_eq!(payloads[0].fee_charged_stroops, Some(50_000));
 
-    // Verify each contract's cursor is set to its own paging token
-    assert_eq!(cursors.get(contract_a_id).map(String::as_str), Some("token_a"));
-    assert_eq!(cursors.get(contract_b_id).map(String::as_str), Some("token_b"));
+    txwatch_notifier::send_webhook(&client, &contract.webhook_url, &payloads[0], None)
+        .await
+        .unwrap();
 }
