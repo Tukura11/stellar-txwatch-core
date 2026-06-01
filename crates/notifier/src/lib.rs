@@ -167,6 +167,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn secret_header_present_when_provided() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/hook", server.uri());
+        send_webhook(&client, &url, &sample_payload(), Some("mysecret")).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].headers.contains_key("x-txwatch-secret"),
+            "X-TxWatch-Secret header should be present when secret is provided"
+        );
+        assert_eq!(
+            requests[0].headers.get("x-txwatch-secret").unwrap(),
+            "mysecret"
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_header_absent_when_not_provided() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/hook", server.uri());
+        send_webhook(&client, &url, &sample_payload(), None).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            !requests[0].headers.contains_key("x-txwatch-secret"),
+            "X-TxWatch-Secret header should not be present when secret is None"
+        );
+    }
+
+    #[tokio::test]
     async fn fails_after_max_retries() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
