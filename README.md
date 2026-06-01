@@ -237,6 +237,17 @@ txwatch (cli binary)
 
 ---
 
+## Tracing and observability
+
+TxWatch uses `tracing` spans to correlate work across each poll cycle and webhook delivery.
+- `txwatch-poller::poll_contract` is instrumented with `contract`, `contract_id`, and `network` fields.
+- `txwatch-poller::fetch_soroban_details` is instrumented with the transaction hash.
+- `txwatch-notifier::send_webhook` creates a span with `contract` and `rule` fields before sending the webhook request.
+
+Set `RUST_LOG=info` or a more specific filter to view structured tracing output in the CLI.
+
+---
+
 ## How a transaction flows through TxWatch
 
 ```

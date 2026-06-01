@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use reqwest::Client;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{error, info, span, warn, Level};
 use txwatch_rules::AlertPayload;
 
 const MAX_RETRIES: u32 = 3;
@@ -31,6 +31,9 @@ pub async fn send_webhook(
     payload: &AlertPayload,
     secret: Option<&str>,
 ) -> Result<DeliveryResult> {
+    let span = span!(Level::INFO, "send_webhook", contract = %payload.label, rule = %payload.rule_triggered);
+    let _enter = span.enter();
+
     let body = serde_json::to_string(payload)?;
     let mut last_err: Option<anyhow::Error> = None;
 

@@ -190,6 +190,11 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
 // ── Per-contract poll ─────────────────────────────────────────────────────────
 
 /// Returns `(transactions_processed, alerts_fired)`.
+#[tracing::instrument(skip(client, contract, cursors), fields(
+    contract = %contract.label,
+    contract_id = %contract.contract_id,
+    network = %contract.network.as_str()
+))]
 async fn poll_contract(
     client: &Client,
     contract: &WatchedContract,
@@ -394,6 +399,7 @@ async fn poll_contract(
 
 // ── Soroban operation enrichment ──────────────────────────────────────────────
 
+#[tracing::instrument(skip(client), fields(tx = %tx_hash))]
 async fn fetch_soroban_details(
     client: &Client,
     base: &str,
