@@ -92,6 +92,30 @@ Set `RUST_LOG=debug` for verbose output.
 
 ---
 
+## Docker
+
+Build the image:
+
+```bash
+docker build -t txwatch .
+```
+
+Run with a config file:
+
+```bash
+docker run -v $(pwd)/config.toml:/config.toml txwatch --config /config.toml watch
+```
+
+Or validate your config:
+
+```bash
+docker run -v $(pwd)/config.toml:/config.toml txwatch --config /config.toml validate
+```
+
+For local development with webhook testing, see [Local Development with Docker Compose](#local-development-with-docker-compose) in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## CLI
 
 ```
