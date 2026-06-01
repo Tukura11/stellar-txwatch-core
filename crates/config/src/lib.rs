@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::{fs, path::Path};
+use url::Url;
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
@@ -140,9 +141,24 @@ impl WatchedContract {
             );
         }
 
-        if !self.webhook_url.starts_with("http://") && !self.webhook_url.starts_with("https://") {
+        let parsed_url = Url::parse(&self.webhook_url).map_err(|e| {
+            anyhow::anyhow!(
+                "contract '{}': webhook_url '{}' is not a valid URL: {}",
+                self.label,
+                self.webhook_url,
+                e
+            )
+        })?;
+        if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
             bail!(
-                "contract '{}': webhook_url '{}' must start with http:// or https://",
+                "contract '{}': webhook_url '{}' must use http or https scheme",
+                self.label,
+                self.webhook_url
+            );
+        }
+        if parsed_url.host().is_none() {
+            bail!(
+                "contract '{}': webhook_url '{}' has no host",
                 self.label,
                 self.webhook_url
             );
@@ -161,6 +177,11 @@ impl WatchedContract {
 }
 
 // ── AppConfig ─────────────────────────────────────────────────────────────────
+
+/// Maximum number of watched contracts allowed in a single configuration.
+/// Exceeding this limit would create too many concurrent Horizon polling tasks,
+/// potentially exhausting memory or file descriptors.
+pub const MAX_CONTRACTS: usize = 100;
 
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
@@ -187,6 +208,13 @@ impl AppConfig {
         }
         if self.contracts.is_empty() {
             bail!("at least one [[contracts]] entry is required");
+        }
+        if self.contracts.len() > MAX_CONTRACTS {
+            bail!(
+                "too many contracts: {} configured, maximum allowed is {}",
+                self.contracts.len(),
+                MAX_CONTRACTS
+            );
         }
         for contract in &self.contracts {
             contract.validate()?;
@@ -237,6 +265,52 @@ mod tests {
         let mut c = valid_contract();
         c.webhook_url = "ftp://bad".into();
         assert!(c.validate().is_err());
+    }
+
+    // ── Issue #80: full URL validation ────────────────────────────────────────
+
+    #[test]
+    fn rejects_webhook_url_with_no_host() {
+        // "https://" alone has no host — previously passed the prefix check
+        let mut c = valid_contract();
+        c.webhook_url = "https://".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_webhook_url_with_spaces() {
+        // Spaces make the URL unparseable
+        let mut c = valid_contract();
+        c.webhook_url = "https://example .com/hook".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_webhook_url_that_is_not_a_url() {
+        let mut c = valid_contract();
+        c.webhook_url = "not-a-url-at-all".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_webhook_url_with_ftp_scheme() {
+        let mut c = valid_contract();
+        c.webhook_url = "ftp://files.example.com/hook".into();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_valid_http_webhook_url() {
+        let mut c = valid_contract();
+        c.webhook_url = "http://hooks.example.com/my-webhook".into();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_valid_https_webhook_url_with_path_and_query() {
+        let mut c = valid_contract();
+        c.webhook_url = "https://hooks.example.com/alerts?token=abc123".into();
+        assert!(c.validate().is_ok());
     }
 
     #[test]
@@ -301,5 +375,44 @@ mod tests {
         "#;
         let cfg: AppConfig = toml::from_str(raw).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    // ── Issue #79: max contracts limit ────────────────────────────────────────
+
+    #[test]
+    fn rejects_config_exceeding_max_contracts() {
+        // Build a TOML string with MAX_CONTRACTS + 1 contracts
+        let contract_block = r#"
+[[contracts]]
+label = "Contract"
+contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+network = "testnet"
+webhook_url = "https://example.com/hook"
+[[contracts.rules]]
+type = "AnyTransaction"
+"#;
+        let header = "poll_interval_seconds = 10\n";
+        let raw = header.to_string() + &contract_block.repeat(MAX_CONTRACTS + 1);
+        let cfg: AppConfig = toml::from_str(&raw).unwrap();
+        let err = cfg.validate();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("too many contracts"));
+    }
+
+    #[test]
+    fn accepts_config_at_max_contracts_limit() {
+        let contract_block = r#"
+[[contracts]]
+label = "Contract"
+contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+network = "testnet"
+webhook_url = "https://example.com/hook"
+[[contracts.rules]]
+type = "AnyTransaction"
+"#;
+        let header = "poll_interval_seconds = 10\n";
+        let raw = header.to_string() + &contract_block.repeat(MAX_CONTRACTS);
+        let cfg: AppConfig = toml::from_str(&raw).unwrap();
+        assert!(cfg.validate().is_ok());
     }
 }

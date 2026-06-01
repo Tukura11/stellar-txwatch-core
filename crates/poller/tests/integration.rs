@@ -138,7 +138,7 @@ async fn any_transaction_fires_webhook() {
         struct OpsEmb  { records: Vec<serde_json::Value> }
         let _ops: OpsPage = client.get(&ops_url).send().await.unwrap().json().await.unwrap();
 
-        let enriched = EnrichedTransaction::from_horizon(raw, None, None, None).unwrap();
+        let enriched = EnrichedTransaction::from_horizon(raw, vec![], None, None).unwrap();
         let payloads = evaluate(
             &contract.label,
             &contract.contract_id,
@@ -209,7 +209,7 @@ async fn transaction_failed_rule_fires_only_on_failure() {
                 successful: true, paging_token: "1".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            None, None, None,
+            vec![], None, None,
         ).unwrap(),
         EnrichedTransaction::from_horizon(
             txwatch_rules::HorizonTransaction {
@@ -217,7 +217,7 @@ async fn transaction_failed_rule_fires_only_on_failure() {
                 successful: false, paging_token: "2".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            None, None, None,
+            vec![], None, None,
         ).unwrap(),
     ];
 
@@ -259,7 +259,7 @@ async fn large_transfer_fires_above_threshold() {
             successful: true, paging_token: "1".into(),
             fee_charged: None, envelope_xdr: None, result_xdr: None,
         },
-        None,
+        vec![],
         Some(100_000_000_000),
         None,
     ).unwrap();
@@ -302,7 +302,7 @@ async fn function_called_rule_fires_on_exact_match() {
                 successful: true, paging_token: "1".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            Some("deposit".into()), None, None,
+            vec!["deposit".into()], None, None,
         ).unwrap(),
         // "withdraw" — SHOULD fire
         EnrichedTransaction::from_horizon(
@@ -311,7 +311,7 @@ async fn function_called_rule_fires_on_exact_match() {
                 successful: true, paging_token: "2".into(),
                 fee_charged: None, envelope_xdr: None, result_xdr: None,
             },
-            Some("withdraw".into()), None, None,
+            vec!["withdraw".into()], None, None,
         ).unwrap(),
     ];
 
@@ -343,4 +343,130 @@ async fn cursor_advances_after_each_transaction() {
     }
 
     assert_eq!(cursors.get(contract_id).map(String::as_str), Some("300"));
+}
+
+/// Issue #78: LargeTransfer fires when two payment ops sum above threshold.
+/// A transaction with two payments of 5000 XLM each should report 10_000 XLM total.
+#[tokio::test]
+async fn large_transfer_fires_when_two_payments_sum_above_threshold() {
+    let receiver = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&receiver)
+        .await;
+
+    let client   = Client::new();
+    let contract = contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::LargeTransfer { threshold_xlm: 5_000 }],
+    );
+
+    // Two payments of 5000 XLM each → summed = 10_000 XLM = 100_000_000_000 stroops
+    let tx = EnrichedTransaction::from_horizon(
+        txwatch_rules::HorizonTransaction {
+            hash: "two_payments_tx".into(), created_at: "2024-06-01T10:00:00Z".into(),
+            successful: true, paging_token: "1".into(),
+            fee_charged: None, envelope_xdr: None, result_xdr: None,
+        },
+        vec![],
+        Some(100_000_000_000), // 5000 + 5000 XLM in stroops
+        None,
+    ).unwrap();
+
+    let payloads = evaluate(
+        &contract.label, &contract.contract_id,
+        contract.network.as_str(), "https://horizon-testnet.stellar.org",
+        "https://stellar.expert/explorer/testnet",
+        &contract.rules, &tx,
+    );
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].amount_xlm, Some(10_000));
+
+    txwatch_notifier::send_webhook(&client, &contract.webhook_url, &payloads[0], None)
+        .await.unwrap();
+}
+
+/// Issue #77: FunctionCalled fires when the matching name is one of multiple
+/// invoke_host_function operations in the same transaction.
+#[tokio::test]
+async fn function_called_fires_on_second_of_two_invocations() {
+    let receiver = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&receiver)
+        .await;
+
+    let client   = Client::new();
+    let contract = contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::FunctionCalled { function_name: "withdraw".into() }],
+    );
+
+    // Transaction contains two Soroban invocations: "deposit" then "withdraw"
+    let tx = EnrichedTransaction::from_horizon(
+        txwatch_rules::HorizonTransaction {
+            hash: "multi_invoke_tx".into(), created_at: "2024-06-01T10:00:00Z".into(),
+            successful: true, paging_token: "1".into(),
+            fee_charged: None, envelope_xdr: None, result_xdr: None,
+        },
+        vec!["deposit".into(), "withdraw".into()],
+        None,
+        None,
+    ).unwrap();
+
+    let payloads = evaluate(
+        &contract.label, &contract.contract_id,
+        contract.network.as_str(), "https://horizon-testnet.stellar.org",
+        "https://stellar.expert/explorer/testnet",
+        &contract.rules, &tx,
+    );
+    assert_eq!(payloads.len(), 1);
+    // Both function names should appear in the payload
+    assert_eq!(payloads[0].function_names, vec!["deposit", "withdraw"]);
+
+    txwatch_notifier::send_webhook(&client, &contract.webhook_url, &payloads[0], None)
+        .await.unwrap();
+}
+
+/// Issue #77: FunctionCalled does NOT fire when neither of two invocations matches.
+#[tokio::test]
+async fn function_called_does_not_fire_when_neither_invocation_matches() {
+    let receiver = MockServer::start().await;
+    // Expect zero webhook calls
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&receiver)
+        .await;
+
+    let client   = Client::new();
+    let contract = contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::FunctionCalled { function_name: "withdraw".into() }],
+    );
+
+    // Transaction has two invocations, neither is "withdraw"
+    let tx = EnrichedTransaction::from_horizon(
+        txwatch_rules::HorizonTransaction {
+            hash: "no_match_tx".into(), created_at: "2024-06-01T10:00:00Z".into(),
+            successful: true, paging_token: "1".into(),
+            fee_charged: None, envelope_xdr: None, result_xdr: None,
+        },
+        vec!["deposit".into(), "transfer".into()],
+        None,
+        None,
+    ).unwrap();
+
+    let payloads = evaluate(
+        &contract.label, &contract.contract_id,
+        contract.network.as_str(), "https://horizon-testnet.stellar.org",
+        "https://stellar.expert/explorer/testnet",
+        &contract.rules, &tx,
+    );
+    assert!(payloads.is_empty());
 }

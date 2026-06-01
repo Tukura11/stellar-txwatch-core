@@ -164,7 +164,7 @@ async fn poll_contract(
 
         cursors.insert(contract.contract_id.clone(), paging_token.clone());
 
-        let (function_name, amount_stroops) =
+        let (function_names, amount_stroops) =
             match fetch_soroban_details(client, base, &tx_hash).await {
                 Ok(details) => details,
                 Err(e) => {
@@ -174,11 +174,11 @@ async fn poll_contract(
                         error    = %e,
                         "could not fetch operation details — evaluating rules without them"
                     );
-                    (None, None)
+                    (Vec::new(), None)
                 }
             };
 
-        let enriched = match EnrichedTransaction::from_horizon(raw_tx, function_name, amount_stroops, None) {
+        let enriched = match EnrichedTransaction::from_horizon(raw_tx, function_names, amount_stroops, None) {
             Ok(t)  => t,
             Err(e) => {
                 warn!(
@@ -237,7 +237,7 @@ async fn fetch_soroban_details(
     client:  &Client,
     base:    &str,
     tx_hash: &str,
-) -> Result<(Option<String>, Option<u64>)> {
+) -> Result<(Vec<String>, Option<u64>)> {
     let url = format!("{}/transactions/{}/operations", base, tx_hash);
 
     let page: OperationsPage = client
@@ -249,25 +249,29 @@ async fn fetch_soroban_details(
         .await
         .with_context(|| format!("failed to parse operations from {}", url))?;
 
-    let mut function_name:  Option<String> = None;
-    let mut amount_stroops: Option<u64>    = None;
+    let mut function_names: Vec<String> = Vec::new();
+    let mut total_stroops:  u64         = 0;
+    let mut has_payment:    bool        = false;
 
     for op in page._embedded.records {
         if op.op_type == "invoke_host_function" {
             if let Some(f) = op.function {
-                function_name = Some(f);
+                function_names.push(f);
             }
         }
         if op.op_type == "payment" {
             if let Some(amt_str) = op.amount {
                 if let Ok(xlm) = amt_str.parse::<f64>() {
-                    amount_stroops = Some((xlm * 10_000_000.0) as u64);
+                    total_stroops = total_stroops.saturating_add((xlm * 10_000_000.0) as u64);
+                    has_payment = true;
                 }
             }
         }
     }
 
-    Ok((function_name, amount_stroops))
+    let amount_stroops = if has_payment { Some(total_stroops) } else { None };
+
+    Ok((function_names, amount_stroops))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -339,10 +343,10 @@ mod tests {
             .await;
 
         let client = Client::new();
-        let (fn_name, amount) =
+        let (fn_names, amount) =
             fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
 
-        assert_eq!(fn_name.as_deref(), Some("withdraw"));
+        assert_eq!(fn_names, vec!["withdraw"]);
         assert!(amount.is_none());
     }
 
@@ -359,10 +363,10 @@ mod tests {
             .await;
 
         let client = Client::new();
-        let (fn_name, amount) =
+        let (fn_names, amount) =
             fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
 
-        assert!(fn_name.is_none());
+        assert!(fn_names.is_empty());
         assert_eq!(amount, Some(10_000_000_000));
     }
 
@@ -377,10 +381,120 @@ mod tests {
             .await;
 
         let client = Client::new();
-        let (fn_name, amount) =
+        let (fn_names, amount) =
             fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
 
-        assert!(fn_name.is_none());
+        assert!(fn_names.is_empty());
         assert!(amount.is_none());
+    }
+
+    // ── Issue #78: sum multiple payment operations ────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_soroban_details_sums_multiple_payment_amounts() {
+        let server = MockServer::start().await;
+        // Two payment ops of 5000 XLM each → should sum to 10_000 XLM = 100_000_000_000 stroops
+        let ops = serde_json::json!({
+            "_embedded": {
+                "records": [
+                    { "type": "payment", "amount": "5000.0000000" },
+                    { "type": "payment", "amount": "5000.0000000" }
+                ]
+            }
+        });
+        Mock::given(method("GET"))
+            .and(path_regex("/transactions/.*/operations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ops))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (fn_names, amount) =
+            fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
+
+        assert!(fn_names.is_empty());
+        // 5000 + 5000 = 10_000 XLM = 100_000_000_000 stroops
+        assert_eq!(amount, Some(100_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn fetch_soroban_details_sums_three_payment_ops() {
+        let server = MockServer::start().await;
+        let ops = serde_json::json!({
+            "_embedded": {
+                "records": [
+                    { "type": "payment", "amount": "100.0000000" },
+                    { "type": "payment", "amount": "200.0000000" },
+                    { "type": "payment", "amount": "300.0000000" }
+                ]
+            }
+        });
+        Mock::given(method("GET"))
+            .and(path_regex("/transactions/.*/operations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ops))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (_fn_names, amount) =
+            fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
+
+        // 100 + 200 + 300 = 600 XLM = 6_000_000_000 stroops
+        assert_eq!(amount, Some(6_000_000_000));
+    }
+
+    // ── Issue #77: multiple invoke_host_function operations ───────────────────
+
+    #[tokio::test]
+    async fn fetch_soroban_details_captures_all_function_names() {
+        let server = MockServer::start().await;
+        // Transaction with two Soroban invocations
+        let ops = serde_json::json!({
+            "_embedded": {
+                "records": [
+                    { "type": "invoke_host_function", "function": "deposit" },
+                    { "type": "invoke_host_function", "function": "withdraw" }
+                ]
+            }
+        });
+        Mock::given(method("GET"))
+            .and(path_regex("/transactions/.*/operations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ops))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (fn_names, amount) =
+            fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
+
+        // Both function names must be captured, in order
+        assert_eq!(fn_names, vec!["deposit", "withdraw"]);
+        assert!(amount.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_soroban_details_captures_mixed_ops() {
+        let server = MockServer::start().await;
+        // One Soroban invocation + one payment in the same transaction
+        let ops = serde_json::json!({
+            "_embedded": {
+                "records": [
+                    { "type": "invoke_host_function", "function": "transfer" },
+                    { "type": "payment", "amount": "1000.0000000" }
+                ]
+            }
+        });
+        Mock::given(method("GET"))
+            .and(path_regex("/transactions/.*/operations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ops))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (fn_names, amount) =
+            fetch_soroban_details(&client, &server.uri(), "abc123").await.unwrap();
+
+        assert_eq!(fn_names, vec!["transfer"]);
+        assert_eq!(amount, Some(10_000_000_000));
     }
 }
