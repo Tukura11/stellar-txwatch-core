@@ -88,7 +88,9 @@ cargo run -p txwatch -- --config config/my-config.toml \
 cargo run -p txwatch -- --config config/my-config.toml watch
 ```
 
-Set `RUST_LOG=debug` for verbose output.
+Set `RUST_LOG=debug` for verbose output. This also enables per-contract idle
+poll logs — the poller emits `"no new transactions"` debug messages with the
+contract label and current cursor when a poll finds nothing new.
 
 ---
 
