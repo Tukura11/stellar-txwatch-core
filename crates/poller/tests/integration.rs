@@ -73,6 +73,9 @@ async fn run_polls_once_and_fires_webhook() {
     let cfg = AppConfig {
         poll_interval_seconds: 1,
         contracts: vec![contract],
+        http_pool_max_idle_per_host: None,
+        http_tcp_keepalive_secs: None,
+        http_connection_verbose: None,
     };
 
     // Drive the loop for one full poll cycle (slightly more than the interval).
@@ -369,7 +372,7 @@ async fn high_fee_rule_fires_on_fee_charged() {
     Mock::given(method("GET"))
         .and(path("/transactions/fee_tx/operations"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(empty_page_json()),
+            ResponseTemplate::new(200).set_body_json(helpers::empty_page()),
         )
         .mount(&horizon)
         .await;
@@ -383,7 +386,7 @@ async fn high_fee_rule_fires_on_fee_charged() {
         .await;
 
     let client   = Client::new();
-    let contract = contract(
+    let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::HighFee { threshold_stroops: 10_000 }],
     );

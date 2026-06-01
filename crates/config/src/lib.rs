@@ -433,6 +433,9 @@ mod tests {
         let cfg = AppConfig {
             poll_interval_seconds: 10,
             contracts: vec![c.clone(), c],
+            http_pool_max_idle_per_host: None,
+            http_tcp_keepalive_secs: None,
+            http_connection_verbose: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("duplicate contract label"));
