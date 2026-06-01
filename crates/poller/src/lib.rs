@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use txwatch_config::{AppConfig, WatchedContract};
 use txwatch_notifier::send_webhook;
 use txwatch_rules::{evaluate, EnrichedTransaction, HorizonTransaction};
@@ -152,6 +152,13 @@ async fn poll_contract(
             contract = %contract.label,
             count    = records.len(),
             "fetched new transactions"
+        );
+    }
+    else {
+        debug!(
+            contract = %contract.label,
+            cursor   = %cursor,
+            "no new transactions"
         );
     }
 

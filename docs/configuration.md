@@ -89,6 +89,10 @@ function_names = ["set_admin", "upgrade", "initialize"]
 |------------|---------|--------------------------------------------------|
 | `RUST_LOG` | `info`  | Log level: `error`, `warn`, `info`, `debug`, `trace` |
 
+Note: setting `RUST_LOG=debug` will show per-contract idle poll cycles — the
+poller emits `"no new transactions"` debug logs with the contract `label` and
+current `cursor` when a poll returns an empty page.
+
 ## Full example
 
 ```toml
