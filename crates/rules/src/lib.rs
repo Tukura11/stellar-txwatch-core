@@ -119,12 +119,14 @@ pub fn evaluate(
                     label:            label.to_string(),
                     contract_id:      contract_id.to_string(),
                     network:          network.to_string(),
+                    rule_type:        rule_type(rule),
                     rule_triggered:   rule_label(rule),
                     transaction_hash: tx.hash.clone(),
                     function_name:    tx.function_name.clone(),
                     amount_xlm:       tx.amount_stroops.map(|s| s / 10_000_000),
                     fee_charged_stroops: tx.fee_charged_stroops,
                     timestamp,
+                    timestamp_iso:    timestamp_iso.clone(),
                     horizon_link:     horizon_link.clone(),
                     explorer_link:    explorer_link.clone(),
                 }),
@@ -191,6 +193,17 @@ fn rule_label(rule: &AlertRule) -> String {
         AlertRule::HighFee { threshold_stroops } => {
             format!("HighFee(>={} stroops)", threshold_stroops)
         }
+    }
+}
+
+fn rule_type(rule: &AlertRule) -> String {
+    match rule {
+        AlertRule::AnyTransaction          => "AnyTransaction".into(),
+        AlertRule::TransactionFailed       => "TransactionFailed".into(),
+        AlertRule::LargeTransfer { .. }   => "LargeTransfer".into(),
+        AlertRule::FunctionCalled { .. }  => "FunctionCalled".into(),
+        AlertRule::AdminFunctionCalled { .. } => "AdminFunctionCalled".into(),
+        AlertRule::HighFee { .. }         => "HighFee".into(),
     }
 }
 

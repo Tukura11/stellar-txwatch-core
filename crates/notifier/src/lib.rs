@@ -82,10 +82,12 @@ pub async fn send_webhook(
 
 /// Build a synthetic `AlertPayload` suitable for `test-webhook`.
 pub fn test_payload(label: &str, webhook_url: &str) -> AlertPayload {
+    let now = Utc::now();
     AlertPayload {
         label:            label.to_string(),
         contract_id:      "CTEST000000000000000000000000000000000000000000000000000".into(),
         network:          "testnet".into(),
+        rule_type:        "TestWebhook".into(),
         rule_triggered:   "TestWebhook".into(),
         transaction_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
         function_name:    Some("test".into()),
@@ -119,6 +121,7 @@ mod tests {
             amount_xlm:       None,
             fee_charged_stroops: None,
             timestamp:        1_700_000_000,
+            timestamp_iso:    "2023-11-15T03:13:20Z".into(),
             horizon_link:     "https://horizon-testnet.stellar.org/transactions/abc123".into(),
             explorer_link:    "https://stellar.expert/explorer/testnet/tx/abc123".into(),
         }

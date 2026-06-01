@@ -110,13 +110,35 @@ All matching rules fire; there is no short-circuit.
 | `timestamp`        | i64         | yes            | Unix timestamp (seconds) of transaction  |
 | `horizon_link`     | string      | yes            | Direct link to transaction on Horizon    |
 
+## Stable rule_type values
+
+The webhook payload includes two rule-related fields:
+
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `rule_type` | Machine-readable, stable rule variant name; use for programmatic routing | `"LargeTransfer"` |
+| `rule_triggered` | Human-readable description with parameters; use for display | `"LargeTransfer(>=10000XLM)"` |
+
+### Rule type table
+
+| Rule | `rule_type` value |
+|------|-------------------|
+| `AnyTransaction` | `"AnyTransaction"` |
+| `TransactionFailed` | `"TransactionFailed"` |
+| `LargeTransfer` | `"LargeTransfer"` |
+| `FunctionCalled` | `"FunctionCalled"` |
+| `AdminFunctionCalled` | `"AdminFunctionCalled"` |
+| `HighFee` | `"HighFee"` |
+
 ## Adding a new rule type
 
 1. Add a variant to `AlertRule` in `crates/config/src/lib.rs`
 2. Add field validation in `AlertRule::validate()` in the same file
 3. Add the match arm in `eval_rule()` in `crates/rules/src/lib.rs`
 4. Add the label string in `rule_label()` in the same file
-5. Add unit tests in `crates/rules/src/lib.rs`
-6. Document it in this file
+5. Add a stable `rule_type` string in `rule_type()` in the same file
+6. Add unit tests in `crates/rules/src/lib.rs`
+7. Update the rule type table in this section
+8. Update the webhook payload example in README.md (if adding a new example)
 
 No other crates need changes.
