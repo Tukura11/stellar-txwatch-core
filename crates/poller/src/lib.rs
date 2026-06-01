@@ -91,12 +91,27 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
     networks.dedup();
     let networks_str = networks.join(", ");
 
+    // Collect distinct (network_name, horizon_base_url) pairs for the startup log.
+    let mut horizon_urls: Vec<(&str, &str)> = cfg
+        .contracts
+        .iter()
+        .map(|c| (c.network.as_str(), c.network.horizon_base_url()))
+        .collect();
+    horizon_urls.sort();
+    horizon_urls.dedup();
+    let horizon_urls_str = horizon_urls
+        .iter()
+        .map(|(net, url)| format!("{}={}", net, url))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     info!(
-        version       = env!("CARGO_PKG_VERSION"),
-        contracts     = n_contracts,
+        version        = env!("CARGO_PKG_VERSION"),
+        contracts      = n_contracts,
         contracts_list = %contracts_list,
-        networks      = %networks_str,
-        interval_secs = cfg.poll_interval_seconds,
+        networks       = %networks_str,
+        horizon_urls   = %horizon_urls_str,
+        interval_secs  = cfg.poll_interval_seconds,
         "TxWatch polling engine started"
     );
 
@@ -325,16 +340,29 @@ async fn fetch_soroban_details(
 // ── Startup log field helpers (for testing) ──────────────────────────────────
 
 #[cfg(test)]
-fn startup_log_fields(cfg: &AppConfig) -> (String, String, String) {
+fn startup_log_fields(cfg: &AppConfig) -> (String, String, String, String) {
     let contracts_list = cfg.contracts.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(", ");
     let mut networks: Vec<&str> = cfg.contracts.iter().map(|c| c.network.as_str()).collect();
     networks.sort();
     networks.dedup();
     let networks_str = networks.join(", ");
+    let mut horizon_urls: Vec<(&str, &str)> = cfg
+        .contracts
+        .iter()
+        .map(|c| (c.network.as_str(), c.network.horizon_base_url()))
+        .collect();
+    horizon_urls.sort();
+    horizon_urls.dedup();
+    let horizon_urls_str = horizon_urls
+        .iter()
+        .map(|(net, url)| format!("{}={}", net, url))
+        .collect::<Vec<_>>()
+        .join(", ");
     (
         env!("CARGO_PKG_VERSION").to_string(),
         contracts_list,
         networks_str,
+        horizon_urls_str,
     )
 }
 
@@ -440,6 +468,9 @@ mod tests {
     fn startup_log_includes_version_contracts_list_and_networks() {
         let cfg = AppConfig {
             poll_interval_seconds: 10,
+            http_pool_max_idle_per_host: None,
+            http_tcp_keepalive_secs: None,
+            http_connection_verbose: None,
             contracts: vec![
                 WatchedContract {
                     label: "Contract A".into(),
@@ -448,6 +479,7 @@ mod tests {
                     rules: vec![txwatch_config::AlertRule::AnyTransaction],
                     webhook_url: "https://hooks.example.com/a".into(),
                     webhook_secret: None,
+                    horizon_base_url_override: None,
                 },
                 WatchedContract {
                     label: "Contract B".into(),
@@ -456,6 +488,7 @@ mod tests {
                     rules: vec![txwatch_config::AlertRule::AnyTransaction],
                     webhook_url: "https://hooks.example.com/b".into(),
                     webhook_secret: None,
+                    horizon_base_url_override: None,
                 },
                 WatchedContract {
                     label: "Contract C".into(),
@@ -464,14 +497,18 @@ mod tests {
                     rules: vec![txwatch_config::AlertRule::AnyTransaction],
                     webhook_url: "https://hooks.example.com/c".into(),
                     webhook_secret: None,
+                    horizon_base_url_override: None,
                 },
             ],
         };
 
-        let (version, contracts_list, networks) = startup_log_fields(&cfg);
+        let (version, contracts_list, networks, horizon_urls) = startup_log_fields(&cfg);
 
         assert!(!version.is_empty());
         assert_eq!(contracts_list, "Contract A, Contract B, Contract C");
         assert_eq!(networks, "mainnet, testnet");
+        // Issue #114: horizon URLs must include network name and URL for each distinct network
+        assert!(horizon_urls.contains("mainnet=https://horizon.stellar.org"));
+        assert!(horizon_urls.contains("testnet=https://horizon-testnet.stellar.org"));
     }
 }
