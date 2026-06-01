@@ -193,6 +193,12 @@ See [docs/alert-rules.md](docs/alert-rules.md) for full details.
 }
 ```
 
+**Webhook headers:**
+- `Content-Type: application/json`
+- `Content-Length: <length of JSON body in bytes>`
+- `X-TxWatch-Version: <package version>`
+- `X-TxWatch-Secret: <secret>` (optional, only when configured)
+
 **Fields:**
 - `rule_type` — stable machine-readable rule variant (e.g. `"LargeTransfer"`, `"HighFee"`); use this for programmatic routing
 - `rule_triggered` — human-readable rule description with parameters (e.g. `"LargeTransfer(>=10000XLM)"`); use this for display

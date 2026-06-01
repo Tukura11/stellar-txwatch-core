@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
-use std::{env, fmt, fs, path::Path};
-use url::Url;
+use anyhow::{anyhow, bail, Context, Result};
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use serde_path_to_error::Deserializer as PathDeserializer;
+use std::{fmt, fs, path::Path};
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
@@ -123,7 +124,8 @@ impl AlertRule {
 
 // ── WatchedContract ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatchedContract {
     pub label:       String,
     pub contract_id: String,
@@ -197,7 +199,8 @@ impl WatchedContract {
 /// potentially exhausting memory or file descriptors.
 pub const MAX_CONTRACTS: usize = 100;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub poll_interval_seconds: u64,
     pub contracts: Vec<WatchedContract>,
@@ -226,6 +229,24 @@ fn default_http_tcp_keepalive_secs() -> Option<u64> {
     None
 }
 
+fn deserialize_toml_with_field_context<'de, T>(raw: &'de str, path: &Path) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let mut deserializer = toml::Deserializer::new(raw);
+    let mut path_deserializer = PathDeserializer::new(&mut deserializer);
+    T::deserialize(&mut path_deserializer).map_err(|error| {
+        let path = error.path().to_string();
+        let inner = error.into_inner();
+        let message = if path.is_empty() {
+            inner.to_string()
+        } else {
+            format!("{} (field: {})", inner, path)
+        };
+        anyhow!(message)
+    })
+}
+
 // ── Env-var interpolation ─────────────────────────────────────────────────────
 
 /// Resolves a `${VAR_NAME}` reference to the corresponding environment variable.
@@ -245,7 +266,7 @@ impl AppConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("cannot read config file '{}'", path.display()))?;
-        let mut cfg: AppConfig = toml::from_str(&raw)
+        let mut cfg: AppConfig = deserialize_toml_with_field_context(&raw, path)
             .with_context(|| format!("failed to parse config file '{}'", path.display()))?;
         cfg.resolve_env_vars()?;
         cfg.validate()?;
@@ -477,32 +498,27 @@ mod tests {
         assert!(error_msg.contains("txwatch_nonexistent_test_config.toml"));
     }
 
-    // ── Issue #115: Serialize round-trip ──────────────────────────────────────
-
     #[test]
-    fn config_round_trips_through_serialize_deserialize() {
-        let contract = WatchedContract {
-            label:       "Round-trip Contract".into(),
-            contract_id: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
-            network:     Network::Testnet,
-            rules:       vec![
-                AlertRule::AnyTransaction,
-                AlertRule::LargeTransfer { threshold_xlm: 5000 },
-                AlertRule::AdminFunctionCalled {
-                    function_names: vec!["set_admin".into()],
-                },
-            ],
-            webhook_url:    "https://example.com/hook".into(),
-            webhook_secret: None,
-            horizon_base_url_override: None,
-        };
-        let json = serde_json::to_string(&contract).expect("serialize failed");
-        let restored: WatchedContract =
-            serde_json::from_str(&json).expect("deserialize failed");
-        assert_eq!(restored.label, contract.label);
-        assert_eq!(restored.contract_id, contract.contract_id);
-        assert_eq!(restored.network, contract.network);
-        assert_eq!(restored.webhook_url, contract.webhook_url);
-        assert_eq!(restored.rules.len(), contract.rules.len());
+    fn from_file_returns_err_for_wrong_type_field() {
+        let path = std::env::temp_dir().join("txwatch_wrong_type_field_test_config.toml");
+        let raw = r#"
+            poll_interval_seconds = "ten"
+            [[contracts]]
+            label = "x"
+            contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            network = "testnet"
+            webhook_url = "https://example.com/hook"
+            [[contracts.rules]]
+            type = "AnyTransaction"
+        "#;
+
+        std::fs::write(&path, raw).unwrap();
+        let result = AppConfig::from_file(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("failed to parse config file"));
+        assert!(error_msg.contains("field: poll_interval_seconds"));
     }
 }

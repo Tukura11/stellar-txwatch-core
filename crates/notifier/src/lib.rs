@@ -309,4 +309,23 @@ mod tests {
         let result = send_webhook(&client, &url, &sample_payload(), None).await;
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn content_length_header_is_present_and_correct() {
+        let server = MockServer::start().await;
+        let body = serde_json::to_string(&sample_payload()).unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .and(header("content-length", body.len().to_string()))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/hook", server.uri());
+        let result = send_webhook(&client, &url, &sample_payload(), None).await;
+        assert!(result.is_ok());
+    }
 }
