@@ -420,3 +420,49 @@ async fn high_fee_rule_fires_on_fee_charged() {
         .await
         .unwrap();
 }
+
+/// Polling the full contract path also enriches Soroban operations and fires
+/// `FunctionCalled` rules when the invoked operation matches.
+#[tokio::test]
+async fn run_polls_contract_and_triggers_function_called_rule() {
+    let horizon  = MockServer::start().await;
+    let receiver = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(helpers::tx_page("func_tx", "1", true)),
+        )
+        .up_to_n_times(1)
+        .mount(&horizon)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/transactions/func_tx/operations"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(helpers::ops_page("withdraw")),
+        )
+        .mount(&horizon)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&receiver)
+        .await;
+
+    let mut contract = helpers::contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::FunctionCalled { function_name: "withdraw".into() }],
+    );
+    contract.horizon_base_url_override = Some(horizon.uri());
+
+    let cfg = AppConfig {
+        poll_interval_seconds: 1,
+        contracts: vec![contract],
+    };
+
+    let _ = tokio::time::timeout(Duration::from_millis(1500), txwatch_poller::run(cfg)).await;
+}
