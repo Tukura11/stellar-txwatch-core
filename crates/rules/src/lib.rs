@@ -83,7 +83,9 @@ pub struct AlertPayload {
     pub transaction_hash: String,
     pub function_name: Option<String>,
     /// Amount in whole XLM (stroops / 10_000_000), present for LargeTransfer.
-    pub amount_xlm: Option<u64>,
+    pub amount_xlm:       Option<u64>,
+    /// Fee charged in stroops.
+    pub fee_charged_stroops: Option<u64>,
     /// Unix timestamp (seconds).
     pub timestamp: i64,
     pub horizon_link: String,
@@ -111,28 +113,31 @@ pub fn evaluate(
 
     rules
         .iter()
-        .filter_map(|rule| match eval_rule(rule, tx) {
-            Ok(true) => Some(AlertPayload {
-                label: label.to_string(),
-                contract_id: contract_id.to_string(),
-                network: network.to_string(),
-                rule_triggered: rule_label(rule),
-                transaction_hash: tx.hash.clone(),
-                function_name: tx.function_name.clone(),
-                amount_xlm: tx.amount_stroops.map(|s| s / 10_000_000),
-                timestamp,
-                horizon_link: horizon_link.clone(),
-                explorer_link: explorer_link.clone(),
-            }),
-            Ok(false) => None,
-            Err(e) => {
-                tracing::warn!(
-                    tx = %tx.hash,
-                    rule = %rule_label(rule),
-                    error = %e,
-                    "rule evaluation error — skipping"
-                );
-                None
+        .filter_map(|rule| {
+            match eval_rule(rule, tx) {
+                Ok(true) => Some(AlertPayload {
+                    label:            label.to_string(),
+                    contract_id:      contract_id.to_string(),
+                    network:          network.to_string(),
+                    rule_triggered:   rule_label(rule),
+                    transaction_hash: tx.hash.clone(),
+                    function_name:    tx.function_name.clone(),
+                    amount_xlm:       tx.amount_stroops.map(|s| s / 10_000_000),
+                    fee_charged_stroops: tx.fee_charged_stroops,
+                    timestamp,
+                    horizon_link:     horizon_link.clone(),
+                    explorer_link:    explorer_link.clone(),
+                }),
+                Ok(false) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        tx = %tx.hash,
+                        rule = %rule_label(rule),
+                        error = %e,
+                        "rule evaluation error — skipping"
+                    );
+                    None
+                }
             }
         })
         .collect()

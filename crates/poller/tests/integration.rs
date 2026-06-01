@@ -344,3 +344,87 @@ async fn cursor_advances_after_each_transaction() {
 
     assert_eq!(cursors.get(contract_id).map(String::as_str), Some("300"));
 }
+
+/// HighFee rule fires when fee_charged from Horizon response exceeds threshold.
+#[tokio::test]
+async fn high_fee_rule_fires_on_fee_charged() {
+    let horizon  = MockServer::start().await;
+    let receiver = MockServer::start().await;
+
+    // Horizon: transaction with fee_charged: "50000" (stroops)
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "_embedded": {
+                        "records": [{
+                            "hash":         "fee_tx",
+                            "created_at":   "2024-06-01T10:00:00Z",
+                            "successful":   true,
+                            "paging_token": "1",
+                            "fee_charged":  "50000",
+                            "envelope_xdr": null,
+                            "result_xdr":   null
+                        }]
+                    }
+                })),
+        )
+        .mount(&horizon)
+        .await;
+
+    // Horizon: operations for that transaction (empty, no Soroban)
+    Mock::given(method("GET"))
+        .and(path("/transactions/fee_tx/operations"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(empty_page_json()),
+        )
+        .mount(&horizon)
+        .await;
+
+    // Webhook receiver: expect exactly 1 POST (HighFee fires)
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&receiver)
+        .await;
+
+    let client   = Client::new();
+    let contract = contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::HighFee { threshold_stroops: 10_000 }],
+    );
+
+    let tx = EnrichedTransaction::from_horizon(
+        txwatch_rules::HorizonTransaction {
+            hash: "fee_tx".into(),
+            created_at: "2024-06-01T10:00:00Z".into(),
+            successful: true,
+            paging_token: "1".into(),
+            fee_charged: Some("50000".into()),
+            envelope_xdr: None,
+            result_xdr: None,
+        },
+        None,
+        None,
+        None,
+    ).unwrap();
+
+    let payloads = evaluate(
+        &contract.label,
+        &contract.contract_id,
+        contract.network.as_str(),
+        &horizon.uri(),
+        "https://stellar.expert/explorer/testnet",
+        &contract.rules,
+        &tx,
+    );
+    assert_eq!(payloads.len(), 1);
+    assert!(payloads[0].rule_triggered.contains("HighFee"));
+    assert_eq!(payloads[0].fee_charged_stroops, Some(50_000));
+
+    txwatch_notifier::send_webhook(&client, &contract.webhook_url, &payloads[0], None)
+        .await
+        .unwrap();
+}

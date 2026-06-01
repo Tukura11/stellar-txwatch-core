@@ -108,27 +108,33 @@ RUST_LOG=debug cargo run -p txwatch -- --config config/my-config.toml watch
 
 ---
 
-## Running tests
+## Running Tests
 
 ```bash
-# All tests across all crates
-cargo test
+cargo test --workspace
+```
 
-# Single crate
+This runs all tests across all crates. For testing a specific crate:
+
+```bash
 cargo test -p txwatch-config
 cargo test -p txwatch-rules
 cargo test -p txwatch-notifier
 cargo test -p txwatch-poller   # includes integration tests
-
-# With log output visible
-cargo test -- --nocapture
 ```
 
-### Integration tests
+Add `-- --nocapture` to see log output while tests run.
 
-Integration tests in `crates/poller/tests/integration.rs` use
-[wiremock](https://crates.io/crates/wiremock) to spin up local HTTP servers
-that simulate Horizon and webhook endpoints. No network access is required.
+## Adding Tests
+
+### Where to put tests
+
+- **Unit tests:** in the same file as the code under test, in a `#[cfg(test)]` module at the bottom
+- **Integration tests:** in a `tests/` directory at the crate root
+
+### Using wiremock
+
+The project uses [wiremock](https://crates.io/crates/wiremock) to mock HTTP endpoints in integration tests — it spins up local HTTP servers that simulate Horizon and webhook endpoints without requiring network access. See `crates/poller/tests/integration.rs` for examples of how to use it.
 
 ---
 
@@ -223,3 +229,4 @@ docs: document MyNewRule in alert-rules.md
 - [ ] `cargo fmt` applied
 - [ ] New rule documented in `docs/alert-rules.md`
 - [ ] CONTRIBUTING.md updated if the contribution process changed
+- [ ] CHANGELOG.md entry added under [Unreleased] describing what changed

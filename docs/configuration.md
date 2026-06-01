@@ -20,6 +20,24 @@ Each entry defines one watched Soroban contract. At least one entry is required.
 | `webhook_url` | string | yes      | `http://` or `https://` endpoint that receives alert JSON.   |
 | `webhook_secret` | string | no    | If set, sent as `X-TxWatch-Secret` header on every POST.     |
 
+### Network field values
+
+Valid `network` values and their corresponding Horizon endpoints:
+
+| Value | Horizon URL |
+|---|---|
+| `mainnet` | https://horizon.stellar.org |
+| `testnet` | https://horizon-testnet.stellar.org |
+| `futurenet` | https://horizon-futurenet.stellar.org |
+
+Any value outside this list will cause a TOML parse error. For example:
+
+```
+Error: unknown variant `main`, expected one of `mainnet`, `testnet`, `futurenet`
+```
+
+To fix: replace your `network` value with one of the valid values listed above.
+
 ## `[[contracts.rules]]`
 
 At least one rule is required per contract. All matching rules fire independently.

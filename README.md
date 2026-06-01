@@ -183,6 +183,7 @@ See [docs/alert-rules.md](docs/alert-rules.md) for full details.
   "transaction_hash": "abc123...",
   "function_name":    "transfer",
   "amount_xlm":       15000,
+  "fee_charged_stroops": 50000,
   "timestamp":        1705316096,
   "horizon_link":     "https://horizon-testnet.stellar.org/transactions/abc123..."
 }
