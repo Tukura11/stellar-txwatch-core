@@ -2,10 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use reqwest::Client;
 use tracing::info;
 use txwatch_config::AppConfig;
-use txwatch_notifier::{send_webhook, test_payload_with_network};
+use txwatch_notifier::{build_client, send_webhook, test_payload_with_network};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
@@ -98,10 +97,7 @@ async fn main() -> Result<()> {
             let network_name = first_contract.network.as_str();
             let horizon_base_url = first_contract.network.horizon_base_url();
             let payload = test_payload_with_network(&label, &url, network_name, horizon_base_url);
-            let client  = Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .context("failed to build HTTP client")?;
+            let client  = build_client().context("failed to build HTTP client")?;
 
             info!(url = %url, "sending test webhook");
             send_webhook(&client, &url, &payload, None)

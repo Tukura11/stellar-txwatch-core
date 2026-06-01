@@ -11,7 +11,6 @@ mod helpers;
 
 use std::time::Duration;
 
-use reqwest::Client;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -73,6 +72,9 @@ async fn run_polls_once_and_fires_webhook() {
     let cfg = AppConfig {
         poll_interval_seconds: 1,
         contracts: vec![contract],
+        http_pool_max_idle_per_host: None,
+        http_tcp_keepalive_secs: None,
+        http_connection_verbose: None,
     };
 
     // Drive the loop for one full poll cycle (slightly more than the interval).
@@ -111,7 +113,7 @@ async fn any_transaction_fires_webhook() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::AnyTransaction],
@@ -191,7 +193,7 @@ async fn transaction_failed_rule_fires_only_on_failure() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::TransactionFailed],
@@ -241,7 +243,7 @@ async fn large_transfer_fires_above_threshold() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::LargeTransfer { threshold_xlm: 5_000 }],
@@ -282,7 +284,7 @@ async fn function_called_rule_fires_on_exact_match() {
         .mount(&receiver)
         .await;
 
-    let client   = Client::new();
+    let client = txwatch_notifier::build_client().unwrap();
     let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
         vec![AlertRule::FunctionCalled { function_name: "withdraw".into() }],
@@ -369,7 +371,7 @@ async fn high_fee_rule_fires_on_fee_charged() {
     Mock::given(method("GET"))
         .and(path("/transactions/fee_tx/operations"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(empty_page_json()),
+            ResponseTemplate::new(200).set_body_json(helpers::empty_page()),
         )
         .mount(&horizon)
         .await;
@@ -383,9 +385,9 @@ async fn high_fee_rule_fires_on_fee_charged() {
         .await;
 
     let client   = Client::new();
-    let contract = contract(
+    let contract = helpers::contract(
         &format!("{}/hook", receiver.uri()),
-        vec![AlertRule::HighFee { threshold_stroops: 10_000 }],
+        vec![AlertRule::HighFee { threshold_stroops: 10_000, threshold_xlm: None }],
     );
 
     let tx = EnrichedTransaction::from_horizon(
@@ -398,7 +400,7 @@ async fn high_fee_rule_fires_on_fee_charged() {
             envelope_xdr: None,
             result_xdr: None,
         },
-        None,
+        vec![],
         None,
         None,
     ).unwrap();

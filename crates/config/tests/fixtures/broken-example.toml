@@ -1,0 +1,14 @@
+poll_interval_seconds = 10
+
+[[contracts]]
+label       = "Broken Contract"
+contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+network     = "testnet"
+webhook_url = "https://hooks.example.com/broken-webhook"
+
+  [[contracts.rules]]
+  type = "AnyTransaction"
+
+  [[contracts.rules]]
+  type = "LargeTransfer"
+  threshold_xlm = 0

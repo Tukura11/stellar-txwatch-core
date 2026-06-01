@@ -42,8 +42,8 @@ pub struct EnrichedTransaction {
     pub timestamp: DateTime<Utc>,
     pub successful: bool,
     pub paging_token: String,
-    /// Soroban contract function that was invoked, if any.
-    pub function_name: Option<String>,
+    /// All Soroban contract functions invoked in this transaction (may be multiple).
+    pub function_names: Vec<String>,
     /// Transfer amount in stroops (1 XLM = 10_000_000 stroops), if detected.
     /// Uses u64 because the total XLM supply is ~50 billion XLM = ~500 trillion stroops,
     /// which is well within u64::MAX (18.4 quintillion). This type is sufficient for any
@@ -69,10 +69,10 @@ impl EnrichedTransaction {
         })?;
 
         Ok(Self {
-            hash: tx.hash,
+            hash:          tx.hash,
             timestamp,
-            successful: tx.successful,
-            paging_token: tx.paging_token,
+            successful:    tx.successful,
+            paging_token:  tx.paging_token,
             function_names,
             amount_stroops,
             fee_charged_stroops: fee_charged_stroops.or_else(|| {
@@ -92,15 +92,23 @@ pub struct AlertPayload {
     pub label: String,
     pub contract_id: String,
     pub network: String,
+    /// Stable machine-readable rule variant (e.g. `"LargeTransfer"`).
+    pub rule_type: String,
     pub rule_triggered: String,
     pub transaction_hash: String,
+    /// First invoked function name (backward-compat singular field).
     pub function_name: Option<String>,
+    /// All invoked function names in this transaction.
+    pub function_names: Vec<String>,
     /// Amount in whole XLM (stroops / 10_000_000), present for LargeTransfer.
-    pub amount_xlm:       Option<u64>,
+    #[serde(rename = "amount_xlm")]
+    pub amount_xlm: Option<u64>,
     /// Fee charged in stroops.
     pub fee_charged_stroops: Option<u64>,
     /// Unix timestamp (seconds).
     pub timestamp: i64,
+    /// ISO 8601 timestamp string.
+    pub timestamp_iso: String,
     pub horizon_link: String,
     /// Stellar Expert explorer link for the transaction.
     pub explorer_link: String,
@@ -120,9 +128,10 @@ pub fn evaluate(
     rules: &[AlertRule],
     tx: &EnrichedTransaction,
 ) -> Vec<AlertPayload> {
-    let horizon_link = format!("{}/transactions/{}", horizon_base, tx.hash);
+    let horizon_link  = format!("{}/transactions/{}", horizon_base, tx.hash);
     let explorer_link = format!("{}/tx/{}", explorer_base, tx.hash);
     let timestamp = tx.timestamp.timestamp();
+    let timestamp_iso = tx.timestamp.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     rules
         .iter()
@@ -183,15 +192,14 @@ fn eval_rule(rule: &AlertRule, tx: &EnrichedTransaction) -> Result<bool> {
             .any(|f| f == function_name.as_str()),
 
         AlertRule::AdminFunctionCalled { function_names } => tx
-            .function_name
-            .as_deref()
-            .map(|f| {
+            .function_names
+            .iter()
+            .any(|f| {
                 let f_lower = f.to_lowercase();
                 function_names.iter().any(|n| n.to_lowercase() == f_lower)
-            })
-            .unwrap_or(false),
+            }),
 
-        AlertRule::HighFee { threshold_stroops } => tx
+        AlertRule::HighFee { threshold_stroops, .. } => tx
             .fee_charged_stroops
             .map(|f| f >= *threshold_stroops)
             .unwrap_or(false),
@@ -212,8 +220,12 @@ fn rule_label(rule: &AlertRule) -> String {
         AlertRule::AdminFunctionCalled { function_names } => {
             format!("AdminFunctionCalled([{}])", function_names.join(", "))
         }
-        AlertRule::HighFee { threshold_stroops } => {
-            format!("HighFee(>={} stroops)", threshold_stroops)
+        AlertRule::HighFee { threshold_stroops, threshold_xlm } => {
+            if let Some(xlm) = threshold_xlm {
+                format!("HighFee(>={} XLM)", xlm)
+            } else {
+                format!("HighFee(>={} stroops)", threshold_stroops)
+            }
         }
     }
 }
@@ -251,11 +263,11 @@ mod tests {
         amount_stroops: Option<u64>,
     ) -> EnrichedTransaction {
         EnrichedTransaction {
-            hash: "abc123".into(),
-            timestamp: "2024-01-15T12:00:00Z".parse().unwrap(),
+            hash:           "abc123".into(),
+            timestamp:      "2024-01-15T12:00:00Z".parse().unwrap(),
             successful,
             paging_token: "100".into(),
-            function_name: function_name.map(str::to_string),
+            function_names: function_names.iter().map(|s| s.to_string()).collect(),
             amount_stroops,
             fee_charged_stroops: None,
         }
@@ -283,10 +295,20 @@ mod tests {
 
     #[test]
     fn any_transaction_fires_on_failed_transaction() {
-        let tx = make_tx(false, None, None);
+        let tx = make_tx(false, &[], None);
         let payloads = run(&[AlertRule::AnyTransaction], &tx);
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0].rule_triggered, "AnyTransaction");
+    }
+
+    #[test]
+    fn rule_label_formats_are_stable() {
+        assert_eq!(rule_label(&AlertRule::AnyTransaction), "AnyTransaction");
+        assert_eq!(rule_label(&AlertRule::TransactionFailed), "TransactionFailed");
+        assert_eq!(rule_label(&AlertRule::LargeTransfer { threshold_xlm: 10_000 }), "LargeTransfer(>=10000XLM)");
+        assert_eq!(rule_label(&AlertRule::FunctionCalled { function_name: "withdraw".into() }), "FunctionCalled(withdraw)");
+        assert_eq!(rule_label(&AlertRule::AdminFunctionCalled { function_names: vec!["set_admin".into(), "upgrade".into()] }), "AdminFunctionCalled([set_admin, upgrade])");
+        assert_eq!(rule_label(&AlertRule::HighFee { threshold_stroops: 10_000 }), "HighFee(>=10000 stroops)");
     }
 
     #[test]
@@ -306,7 +328,7 @@ mod tests {
     #[test]
     fn large_transfer_fires_at_threshold() {
         // exactly 10_000 XLM = 100_000_000_000 stroops
-        let tx = make_tx(true, None, Some(100_000_000_000));
+        let tx = make_tx(true, &[], Some(100_000_000_000));
         let payloads = run(
             &[AlertRule::LargeTransfer {
                 threshold_xlm: 10_000,
@@ -319,7 +341,7 @@ mod tests {
 
     #[test]
     fn large_transfer_does_not_fire_below_threshold() {
-        let tx = make_tx(true, None, Some(9_999 * 10_000_000));
+        let tx = make_tx(true, &[], Some(9_999 * 10_000_000));
         let payloads = run(
             &[AlertRule::LargeTransfer {
                 threshold_xlm: 10_000,
@@ -338,7 +360,7 @@ mod tests {
 
     #[test]
     fn large_transfer_fires_at_exact_threshold() {
-        let tx = make_tx(true, None, Some(10_000 * 10_000_000));
+        let tx = make_tx(true, &[], Some(10_000 * 10_000_000));
         let payloads = run(&[AlertRule::LargeTransfer { threshold_xlm: 10_000 }], &tx);
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0].amount_xlm, Some(10_000));
@@ -346,7 +368,7 @@ mod tests {
 
     #[test]
     fn large_transfer_does_not_fire_one_stroop_below_threshold() {
-        let tx = make_tx(true, None, Some(10_000 * 10_000_000 - 1));
+        let tx = make_tx(true, &[], Some(10_000 * 10_000_000 - 1));
         let payloads = run(&[AlertRule::LargeTransfer { threshold_xlm: 10_000 }], &tx);
         assert!(payloads.is_empty());
     }
@@ -391,7 +413,7 @@ mod tests {
 
     #[test]
     fn function_called_does_not_fire_when_function_name_is_none() {
-        let tx = make_tx(true, None, None);
+        let tx = make_tx(true, &[], None);
         let payloads = run(
             &[AlertRule::FunctionCalled { function_name: "withdraw".into() }],
             &tx,
@@ -401,7 +423,7 @@ mod tests {
 
     #[test]
     fn admin_function_called_does_not_fire_when_function_name_is_none() {
-        let tx = make_tx(true, None, None);
+        let tx = make_tx(true, &[], None);
         let payloads = run(
             &[AlertRule::AdminFunctionCalled {
                 function_names: vec!["set_admin".into(), "upgrade".into()],
@@ -439,12 +461,51 @@ mod tests {
     }
 
     #[test]
+    fn url_fields_have_no_trailing_slash_and_exact_format() {
+        // Verify both link fields are normalised even when base URLs have trailing slashes.
+        fn run_with_bases(horizon_base: &str, explorer_base: &str) -> AlertPayload {
+            let tx = EnrichedTransaction {
+                hash: "deadbeef".into(),
+                timestamp: "2024-01-15T12:00:00Z".parse().unwrap(),
+                successful: true,
+                paging_token: "1".into(),
+                function_names: vec![],
+                amount_stroops: None,
+                fee_charged_stroops: None,
+            };
+            let mut payloads = evaluate(
+                "L", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "testnet", horizon_base, explorer_base,
+                &[AlertRule::AnyTransaction], &tx,
+            );
+            payloads.remove(0)
+        }
+
+        // Without trailing slash — baseline
+        let p = run_with_bases(
+            "https://horizon-testnet.stellar.org",
+            "https://stellar.expert/explorer/testnet",
+        );
+        assert_eq!(p.horizon_link,  "https://horizon-testnet.stellar.org/transactions/deadbeef");
+        assert_eq!(p.explorer_link, "https://stellar.expert/explorer/testnet/tx/deadbeef");
+
+        // With trailing slash — must produce identical output
+        let p2 = run_with_bases(
+            "https://horizon-testnet.stellar.org/",
+            "https://stellar.expert/explorer/testnet/",
+        );
+        assert_eq!(p.horizon_link,  p2.horizon_link);
+        assert_eq!(p.explorer_link, p2.explorer_link);
+    }
+
+    #[test]
     fn high_fee_fires_at_threshold() {
         let mut tx = make_tx(true, &[], None);
         tx.fee_charged_stroops = Some(10_000);
         let payloads = run(
             &[AlertRule::HighFee {
                 threshold_stroops: 10_000,
+                threshold_xlm:     None,
             }],
             &tx,
         );
@@ -459,6 +520,7 @@ mod tests {
         let payloads = run(
             &[AlertRule::HighFee {
                 threshold_stroops: 10_000,
+                threshold_xlm:     None,
             }],
             &tx,
         );
@@ -467,10 +529,11 @@ mod tests {
 
     #[test]
     fn high_fee_no_fee_does_not_fire() {
-        let tx = make_tx(true, None, None);
+        let tx = make_tx(true, &[], None);
         let payloads = run(
             &[AlertRule::HighFee {
                 threshold_stroops: 1,
+                threshold_xlm:     None,
             }],
             &tx,
         );
