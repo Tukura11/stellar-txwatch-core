@@ -8,6 +8,13 @@ Config is a TOML file passed via `--config` (default: `config/example.toml`).
 |-------------------------|------|----------|---------------------------------------|
 | `poll_interval_seconds` | u64  | yes      | How often to poll Horizon (seconds). Must be > 0 and ≤ 3600. |
 
+> **Horizon rate limits:** Polling too frequently across many contracts can exhaust Horizon's per-IP request quota,
+> resulting in `429 Too Many Requests` responses. Sustained polling across six or more contracts at intervals below
+> 10 seconds is known to trigger rate limiting in production. The recommended minimum is
+> `poll_interval_seconds = 10`; for high-volume deployments with many contracts, `poll_interval_seconds = 30` or
+> higher is advised. TxWatch logs a startup warning when `poll_interval_seconds < 10` and more than 5 contracts
+> are configured.
+
 > **Contract limit:** A maximum of **100** `[[contracts]]` entries are allowed per configuration file. Exceeding this limit is rejected at startup to prevent exhausting memory or file descriptors from too many concurrent Horizon polling tasks.
 
 ## `[[contracts]]`

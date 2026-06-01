@@ -2,6 +2,7 @@ poll_interval_seconds = 10
 
 [[contracts]]
 label       = "My Escrow Contract"
+# Replace with your actual Soroban contract address (56 characters, starts with 'C')
 contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 network     = "testnet"
 webhook_url = "https://hooks.example.com/my-webhook"
@@ -20,6 +21,7 @@ webhook_url = "https://hooks.example.com/my-webhook"
 
 [[contracts]]
 label       = "Mainnet Vault"
+# Replace with your actual Soroban contract address (56 characters, starts with 'C')
 contract_id = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 network     = "mainnet"
 webhook_url = "https://hooks.example.com/vault-webhook"
@@ -36,6 +38,7 @@ webhook_url = "https://hooks.example.com/vault-webhook"
 # rules per contract, even if they share the same network.
 [[contracts]]
 label       = "Mainnet Bridge Gateway"
+# Replace with your actual Soroban contract address (56 characters, starts with 'C')
 contract_id = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
 # network must be one of: mainnet / testnet / futurenet
 network     = "mainnet"

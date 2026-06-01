@@ -6,7 +6,10 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/refs/");
 
     println!("cargo:rustc-env=TXWATCH_GIT_SHA={}", git_sha());
-    println!("cargo:rustc-env=TXWATCH_BUILD_TIMESTAMP={}", build_timestamp());
+    println!(
+        "cargo:rustc-env=TXWATCH_BUILD_TIMESTAMP={}",
+        build_timestamp()
+    );
 }
 
 fn git_sha() -> String {

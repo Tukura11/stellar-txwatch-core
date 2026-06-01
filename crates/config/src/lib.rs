@@ -1,12 +1,15 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used)]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde_path_to_error::Deserializer as PathDeserializer;
 use std::{fmt, fs, path::Path};
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
     Mainnet,
@@ -17,16 +20,16 @@ pub enum Network {
 impl Network {
     pub fn horizon_base_url(&self) -> &'static str {
         match self {
-            Network::Mainnet   => "https://horizon.stellar.org",
-            Network::Testnet   => "https://horizon-testnet.stellar.org",
+            Network::Mainnet => "https://horizon.stellar.org",
+            Network::Testnet => "https://horizon-testnet.stellar.org",
             Network::Futurenet => "https://horizon-futurenet.stellar.org",
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Network::Mainnet   => "mainnet",
-            Network::Testnet   => "testnet",
+            Network::Mainnet => "mainnet",
+            Network::Testnet => "testnet",
             Network::Futurenet => "futurenet",
         }
     }
@@ -34,8 +37,8 @@ impl Network {
     /// Human-readable display name shown in logs and CLI output.
     pub fn display_name(&self) -> &'static str {
         match self {
-            Network::Mainnet   => "Stellar Mainnet",
-            Network::Testnet   => "Stellar Testnet",
+            Network::Mainnet => "Stellar Mainnet",
+            Network::Testnet => "Stellar Testnet",
             Network::Futurenet => "Stellar Futurenet",
         }
     }
@@ -43,8 +46,8 @@ impl Network {
     /// Stellar Expert explorer base URL for this network.
     pub fn explorer_base_url(&self) -> &'static str {
         match self {
-            Network::Mainnet   => "https://stellar.expert/explorer/public",
-            Network::Testnet   => "https://stellar.expert/explorer/testnet",
+            Network::Mainnet => "https://stellar.expert/explorer/public",
+            Network::Testnet => "https://stellar.expert/explorer/testnet",
             Network::Futurenet => "https://stellar.expert/explorer/futurenet",
         }
     }
@@ -58,7 +61,7 @@ impl fmt::Display for Network {
 
 // ── AlertRule ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum AlertRule {
     AnyTransaction,
@@ -66,8 +69,15 @@ pub enum AlertRule {
     LargeTransfer       { threshold_xlm: u64 },
     FunctionCalled      { function_name: String },
     AdminFunctionCalled { function_names: Vec<String> },
-    /// Fires when the transaction's fee (in stroops) exceeds the threshold.
-    HighFee             { threshold_stroops: u64 },
+    /// Fires when the transaction's fee exceeds the threshold.
+    /// Specify either `threshold_stroops` (raw stroops) or `threshold_xlm` (whole XLM,
+    /// converted to stroops during validation); the two are mutually exclusive.
+    HighFee {
+        #[serde(default)]
+        threshold_stroops: u64,
+        #[serde(default)]
+        threshold_xlm: Option<u64>,
+    },
 }
 
 impl AlertRule {
@@ -107,12 +117,30 @@ impl AlertRule {
                 }
             }
             AlertRule::AnyTransaction | AlertRule::TransactionFailed => {}
-            AlertRule::HighFee { threshold_stroops } => {
-                if *threshold_stroops == 0 {
-                    bail!(
+            AlertRule::HighFee { threshold_stroops, threshold_xlm } => {
+                match (*threshold_xlm, *threshold_stroops) {
+                    (Some(_), s) if s > 0 => bail!(
+                        "contract '{}': HighFee: specify either threshold_stroops or \
+                         threshold_xlm, not both",
+                        contract_label
+                    ),
+                    (None, 0) => bail!(
                         "contract '{}': HighFee threshold_stroops must be > 0",
                         contract_label
-                    );
+                    ),
+                    (Some(0), _) => bail!(
+                        "contract '{}': HighFee threshold_xlm must be > 0",
+                        contract_label
+                    ),
+                    (Some(xlm), 0) => {
+                        *threshold_stroops = xlm.checked_mul(10_000_000).with_context(|| {
+                            format!(
+                                "contract '{}': HighFee threshold_xlm overflow",
+                                contract_label
+                            )
+                        })?;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -123,11 +151,12 @@ impl AlertRule {
 // ── WatchedContract ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatchedContract {
-    pub label:       String,
+    pub label: String,
     pub contract_id: String,
-    pub network:     Network,
-    pub rules:       Vec<AlertRule>,
+    pub network: Network,
+    pub rules: Vec<AlertRule>,
     pub webhook_url: String,
     /// Optional secret sent as X-TxWatch-Secret header on every webhook POST.
     /// Supports `${ENV_VAR}` interpolation (e.g. `webhook_secret = "${MY_SECRET}"`).
@@ -197,6 +226,7 @@ impl WatchedContract {
 pub const MAX_CONTRACTS: usize = 100;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub poll_interval_seconds: u64,
     pub contracts: Vec<WatchedContract>,
@@ -225,15 +255,30 @@ fn default_http_tcp_keepalive_secs() -> Option<u64> {
     None
 }
 
+fn deserialize_toml_with_field_context<'de, T>(raw: &'de str, path: &Path) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let mut deserializer = toml::Deserializer::new(raw);
+    let mut path_deserializer = PathDeserializer::new(&mut deserializer);
+    T::deserialize(&mut path_deserializer).map_err(|error| {
+        let path = error.path().to_string();
+        let inner = error.into_inner();
+        let message = if path.is_empty() {
+            inner.to_string()
+        } else {
+            format!("{} (field: {})", inner, path)
+        };
+        anyhow!(message)
+    })
+}
+
 // ── Env-var interpolation ─────────────────────────────────────────────────────
 
 /// Resolves a `${VAR_NAME}` reference to the corresponding environment variable.
 /// Values that don't match the `${...}` pattern are returned unchanged.
 fn resolve_env_interpolation(value: &str) -> Result<String> {
-    match value
-        .strip_prefix("${")
-        .and_then(|s| s.strip_suffix('}'))
-    {
+    match value.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
         Some(var_name) => env::var(var_name)
             .with_context(|| format!("env var '{}' referenced in config is not set", var_name)),
         None => Ok(value.to_owned()),
@@ -241,14 +286,33 @@ fn resolve_env_interpolation(value: &str) -> Result<String> {
 }
 
 impl AppConfig {
+    fn resolve_env_vars(&mut self) -> Result<()> {
+        for contract in &mut self.contracts {
+            if let Some(secret) = &contract.webhook_secret {
+                contract.webhook_secret = Some(resolve_env_interpolation(secret)?);
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("cannot read config file '{}'", path.display()))?;
-        let mut cfg: AppConfig = toml::from_str(&raw)
+        let mut cfg: AppConfig = deserialize_toml_with_field_context(&raw, path)
             .with_context(|| format!("failed to parse config file '{}'", path.display()))?;
         cfg.resolve_env_vars()?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Resolve `${ENV_VAR}` interpolation in `webhook_secret` fields.
+    fn resolve_env_vars(&mut self) -> Result<()> {
+        for contract in &mut self.contracts {
+            if let Some(secret) = &contract.webhook_secret {
+                contract.webhook_secret = Some(resolve_env_interpolation(secret)?);
+            }
+        }
+        Ok(())
     }
 
     pub fn validate(&mut self) -> Result<()> {
@@ -277,16 +341,17 @@ impl AppConfig {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     fn valid_contract() -> WatchedContract {
         WatchedContract {
-            label:          "Test".into(),
-            contract_id:    "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
-            network:        Network::Testnet,
-            rules:          vec![AlertRule::AnyTransaction],
-            webhook_url:    "https://example.com/hook".into(),
+            label: "Test".into(),
+            contract_id: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            network: Network::Testnet,
+            rules: vec![AlertRule::AnyTransaction],
+            webhook_url: "https://example.com/hook".into(),
             webhook_secret: None,
             horizon_base_url_override: None,
         }
@@ -382,14 +447,18 @@ mod tests {
     #[test]
     fn rejects_empty_function_name() {
         let mut c = valid_contract();
-        c.rules = vec![AlertRule::FunctionCalled { function_name: "  ".into() }];
+        c.rules = vec![AlertRule::FunctionCalled {
+            function_name: "  ".into(),
+        }];
         assert!(c.validate().is_err());
     }
 
     #[test]
     fn rejects_empty_admin_function_names() {
         let mut c = valid_contract();
-        c.rules = vec![AlertRule::AdminFunctionCalled { function_names: vec![] }];
+        c.rules = vec![AlertRule::AdminFunctionCalled {
+            function_names: vec![],
+        }];
         assert!(c.validate().is_err());
     }
 
@@ -409,7 +478,9 @@ mod tests {
 
     #[test]
     fn network_urls() {
-        assert!(Network::Mainnet.horizon_base_url().contains("horizon.stellar.org"));
+        assert!(Network::Mainnet
+            .horizon_base_url()
+            .contains("horizon.stellar.org"));
         assert!(Network::Testnet.horizon_base_url().contains("testnet"));
         assert!(Network::Futurenet.horizon_base_url().contains("futurenet"));
     }
@@ -430,12 +501,70 @@ mod tests {
     #[test]
     fn rejects_duplicate_labels() {
         let c = valid_contract();
-        let cfg = AppConfig {
+        let mut cfg = AppConfig {
             poll_interval_seconds: 10,
             contracts: vec![c.clone(), c],
+            http_pool_max_idle_per_host: None,
+            http_tcp_keepalive_secs: None,
+            http_connection_verbose: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("duplicate contract label"));
+    }
+
+    // ── Issue #94: AppConfig::validate rejects empty contracts ────────────────
+
+    #[test]
+    fn appconfig_validate_rejects_empty_contracts() {
+        let mut cfg = AppConfig {
+            poll_interval_seconds: 10,
+            contracts: vec![],
+            http_pool_max_idle_per_host: None,
+            http_tcp_keepalive_secs: None,
+            http_connection_verbose: None,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("at least one"),
+            "error should mention 'at least one', got: {}",
+            err
+        );
+    }
+
+    // ── Issue #96: HighFee threshold_xlm convenience alternative ─────────────
+
+    #[test]
+    fn high_fee_threshold_xlm_normalises_to_stroops() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 0, threshold_xlm: Some(1) }];
+        c.validate().unwrap();
+        if let AlertRule::HighFee { threshold_stroops, .. } = &c.rules[0] {
+            assert_eq!(*threshold_stroops, 10_000_000, "1 XLM should become 10_000_000 stroops");
+        } else {
+            panic!("expected HighFee");
+        }
+    }
+
+    #[test]
+    fn high_fee_threshold_xlm_zero_is_rejected() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 0, threshold_xlm: Some(0) }];
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn high_fee_both_thresholds_is_rejected() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 100, threshold_xlm: Some(1) }];
+        let err = c.validate().unwrap_err();
+        assert!(err.to_string().contains("not both"));
+    }
+
+    #[test]
+    fn high_fee_neither_threshold_is_rejected() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::HighFee { threshold_stroops: 0, threshold_xlm: None }];
+        assert!(c.validate().is_err());
     }
 
     #[test]
@@ -461,5 +590,29 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("txwatch_nonexistent_test_config.toml"));
+    }
+
+    #[test]
+    fn from_file_returns_err_for_wrong_type_field() {
+        let path = std::env::temp_dir().join("txwatch_wrong_type_field_test_config.toml");
+        let raw = r#"
+            poll_interval_seconds = "ten"
+            [[contracts]]
+            label = "x"
+            contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            network = "testnet"
+            webhook_url = "https://example.com/hook"
+            [[contracts.rules]]
+            type = "AnyTransaction"
+        "#;
+
+        std::fs::write(&path, raw).unwrap();
+        let result = AppConfig::from_file(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("failed to parse config file"));
+        assert!(error_msg.contains("field: poll_interval_seconds"));
     }
 }

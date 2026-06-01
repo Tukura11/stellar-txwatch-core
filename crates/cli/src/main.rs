@@ -2,10 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use reqwest::Client;
 use tracing::info;
 use txwatch_config::AppConfig;
-use txwatch_notifier::{send_webhook, test_payload_with_network};
+use txwatch_notifier::{build_client, send_webhook, test_payload_with_network};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
@@ -36,7 +35,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Start the polling engine (watches all contracts in the config)
-    Watch,
+    Watch {
+        /// Do not actually send webhooks; only log matched rules
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// Parse and validate the config file, then print a summary
     ///
@@ -74,30 +77,40 @@ async fn main() -> Result<()> {
                 println!(
                     "  [{network}] {label}",
                     network = c.network.display_name(),
-                    label   = c.label
+                    label = c.label
                 );
                 println!("    contract_id  : {}", c.contract_id);
                 println!("    webhook_url  : {}", c.webhook_url);
-                println!("    secret       : {}", if c.webhook_secret.is_some() { "set" } else { "none" });
+                println!(
+                    "    secret       : {}",
+                    if c.webhook_secret.is_some() {
+                        "set"
+                    } else {
+                        "none"
+                    }
+                );
                 println!("    rules        : {}", c.rules.len());
                 println!("    horizon      : {}", c.network.horizon_base_url());
-                println!("    explorer     : {}/contract/{}", c.network.explorer_base_url(), c.contract_id);
+                println!(
+                    "    explorer     : {}/contract/{}",
+                    c.network.explorer_base_url(),
+                    c.contract_id
+                );
             }
         }
 
         Command::TestWebhook { url, label } => {
             let cfg = AppConfig::from_file(&cli.config)?;
             if cfg.contracts.is_empty() {
-                return Err(anyhow::anyhow!("config has no contracts; cannot derive network for test-webhook"));
+                return Err(anyhow::anyhow!(
+                    "config has no contracts; cannot derive network for test-webhook"
+                ));
             }
             let first_contract = &cfg.contracts[0];
             let network_name = first_contract.network.as_str();
             let horizon_base_url = first_contract.network.horizon_base_url();
             let payload = test_payload_with_network(&label, &url, network_name, horizon_base_url);
-            let client  = Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .context("failed to build HTTP client")?;
+            let client  = build_client().context("failed to build HTTP client")?;
 
             info!(url = %url, "sending test webhook");
             send_webhook(&client, &url, &payload, None)
@@ -106,15 +119,16 @@ async fn main() -> Result<()> {
             println!("Test webhook delivered successfully to {}", url);
         }
 
-        Command::Watch => {
+        Command::Watch { dry_run } => {
             let cfg = AppConfig::from_file(&cli.config)?;
             info!(
                 version        = VERSION,
                 contracts      = cfg.contracts.len(),
                 interval_secs  = cfg.poll_interval_seconds,
+                dry_run        = dry_run,
                 "starting TxWatch"
             );
-            txwatch_poller::run(cfg).await?;
+            txwatch_poller::run_with(cfg, dry_run).await?;
         }
     }
 
