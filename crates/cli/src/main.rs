@@ -30,6 +30,8 @@ enum Command {
     Watch,
 
     /// Parse and validate the config file, then print a summary
+    ///
+    /// Exit codes: 0 = valid config, 1 = invalid or missing config
     Validate,
 
     /// Send a test webhook payload to a URL and exit
