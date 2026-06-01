@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde_path_to_error::Deserializer as PathDeserializer;
 use std::{fmt, fs, path::Path};
 
 // ── Network ───────────────────────────────────────────────────────────────────
@@ -225,6 +227,24 @@ fn default_http_tcp_keepalive_secs() -> Option<u64> {
     None
 }
 
+fn deserialize_toml_with_field_context<'de, T>(raw: &'de str, path: &Path) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let mut deserializer = toml::Deserializer::new(raw);
+    let mut path_deserializer = PathDeserializer::new(&mut deserializer);
+    T::deserialize(&mut path_deserializer).map_err(|error| {
+        let path = error.path().to_string();
+        let inner = error.into_inner();
+        let message = if path.is_empty() {
+            inner.to_string()
+        } else {
+            format!("{} (field: {})", inner, path)
+        };
+        anyhow!(message)
+    })
+}
+
 // ── Env-var interpolation ─────────────────────────────────────────────────────
 
 /// Resolves a `${VAR_NAME}` reference to the corresponding environment variable.
@@ -244,7 +264,7 @@ impl AppConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("cannot read config file '{}'", path.display()))?;
-        let mut cfg: AppConfig = toml::from_str(&raw)
+        let mut cfg: AppConfig = deserialize_toml_with_field_context(&raw, path)
             .with_context(|| format!("failed to parse config file '{}'", path.display()))?;
         cfg.resolve_env_vars()?;
         cfg.validate()?;
@@ -461,5 +481,29 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("txwatch_nonexistent_test_config.toml"));
+    }
+
+    #[test]
+    fn from_file_returns_err_for_wrong_type_field() {
+        let path = std::env::temp_dir().join("txwatch_wrong_type_field_test_config.toml");
+        let raw = r#"
+            poll_interval_seconds = "ten"
+            [[contracts]]
+            label = "x"
+            contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            network = "testnet"
+            webhook_url = "https://example.com/hook"
+            [[contracts.rules]]
+            type = "AnyTransaction"
+        "#;
+
+        std::fs::write(&path, raw).unwrap();
+        let result = AppConfig::from_file(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("failed to parse config file"));
+        assert!(error_msg.contains("field: poll_interval_seconds"));
     }
 }
