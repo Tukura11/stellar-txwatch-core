@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  txwatch:
+    build: .
+    container_name: txwatch-dev
+    volumes:
+      - ./config/example.toml:/config.toml
+    environment:
+      RUST_LOG: debug
+    command: --config /config.toml watch
+    depends_on:
+      - webhook
+    networks:
+      - txwatch
+
+  webhook:
+    image: mendhak/http-https-echo:latest
+    container_name: webhook-echo
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_PORT: "8080"
+    networks:
+      - txwatch
+
+networks:
+  txwatch:
+    driver: bridge

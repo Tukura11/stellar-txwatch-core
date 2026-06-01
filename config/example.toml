@@ -30,3 +30,22 @@ webhook_url = "https://hooks.example.com/vault-webhook"
   [[contracts.rules]]
   type          = "FunctionCalled"
   function_name = "withdraw"
+
+# Each [[contracts]] block is independent: rules, webhook_url, and network settings
+# apply only to that contract. You can define different webhook receivers and alert
+# rules per contract, even if they share the same network.
+[[contracts]]
+label       = "Mainnet Bridge Gateway"
+contract_id = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+# network must be one of: mainnet / testnet / futurenet
+network     = "mainnet"
+# webhook_url can differ per contract — this allows routing alerts to different endpoints
+webhook_url = "https://hooks.example.com/bridge-webhook"
+# webhook_secret = "another-secret-token"
+
+  [[contracts.rules]]
+  type          = "HighFee"
+  threshold_stroops = 100000
+
+  [[contracts.rules]]
+  type = "TransactionFailed"

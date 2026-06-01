@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
-use chrono::Utc;
 use reqwest::Client;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 use txwatch_rules::AlertPayload;
 
@@ -11,16 +10,19 @@ const MAX_RETRIES: u32 = 3;
 /// exponential backoff (2 s → 4 s → 8 s). Logs each attempt.
 /// If `secret` is Some, adds an `X-TxWatch-Secret` header to every request.
 pub async fn send_webhook(
-    client:  &Client,
-    url:     &str,
+    client: &Client,
+    url: &str,
     payload: &AlertPayload,
-    secret:  Option<&str>,
+    secret: Option<&str>,
 ) -> Result<()> {
     let body = serde_json::to_string(payload)?;
     let mut last_err: Option<anyhow::Error> = None;
 
     for attempt in 1..=MAX_RETRIES {
-        let ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         let mut req = client
             .post(url)
@@ -30,8 +32,7 @@ pub async fn send_webhook(
         if let Some(s) = secret {
             req = req.header("X-TxWatch-Secret", s);
         }
-        match req.send().await
-        {
+        match req.send().await {
             Ok(resp) if resp.status().is_success() => {
                 info!(
                     timestamp = %ts,
@@ -82,20 +83,21 @@ pub async fn send_webhook(
 }
 
 /// Build a synthetic `AlertPayload` suitable for `test-webhook`.
+/// Uses the provided network name and horizon base URL, falling back to testnet defaults if not provided.
 pub fn test_payload(label: &str, webhook_url: &str) -> AlertPayload {
+    let now = Utc::now();
     AlertPayload {
         label:            label.to_string(),
         contract_id:      "CTEST000000000000000000000000000000000000000000000000000".into(),
         network:          "testnet".into(),
+        rule_type:        "TestWebhook".into(),
         rule_triggered:   "TestWebhook".into(),
         transaction_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
         function_name:    Some("test".into()),
         amount_xlm:       None,
+        fee_charged_stroops: None,
         timestamp:        Utc::now().timestamp(),
-        horizon_link:     format!(
-            "https://horizon-testnet.stellar.org/transactions/\
-             0000000000000000000000000000000000000000000000000000000000000000"
-        ),
+        horizon_link: "https://horizon-testnet.stellar.org/transactions/0000000000000000000000000000000000000000000000000000000000000000".into(),
         explorer_link:    "https://stellar.expert/explorer/testnet/tx/0000000000000000000000000000000000000000000000000000000000000000".into(),
     }
     // suppress unused webhook_url warning — callers use it to POST
@@ -108,19 +110,21 @@ pub fn test_payload(label: &str, webhook_url: &str) -> AlertPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn sample_payload() -> AlertPayload {
         AlertPayload {
-            label:            "Test Contract".into(),
-            contract_id:      "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
-            network:          "testnet".into(),
-            rule_triggered:   "AnyTransaction".into(),
+            label: "Test Contract".into(),
+            contract_id: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            network: "testnet".into(),
+            rule_triggered: "AnyTransaction".into(),
             transaction_hash: "abc123".into(),
             function_name:    None,
             amount_xlm:       None,
+            fee_charged_stroops: None,
             timestamp:        1_700_000_000,
+            timestamp_iso:    "2023-11-15T03:13:20Z".into(),
             horizon_link:     "https://horizon-testnet.stellar.org/transactions/abc123".into(),
             explorer_link:    "https://stellar.expert/explorer/testnet/tx/abc123".into(),
         }
@@ -165,6 +169,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn secret_header_present_when_provided() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/hook", server.uri());
+        send_webhook(&client, &url, &sample_payload(), Some("mysecret")).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].headers.contains_key("x-txwatch-secret"),
+            "X-TxWatch-Secret header should be present when secret is provided"
+        );
+        assert_eq!(
+            requests[0].headers.get("x-txwatch-secret").unwrap(),
+            "mysecret"
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_header_absent_when_not_provided() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/hook", server.uri());
+        send_webhook(&client, &url, &sample_payload(), None).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            !requests[0].headers.contains_key("x-txwatch-secret"),
+            "X-TxWatch-Secret header should not be present when secret is None"
+        );
+    }
+
+    #[tokio::test]
     async fn fails_after_max_retries() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -184,5 +234,22 @@ mod tests {
         let p = test_payload("My Contract", "https://example.com/hook");
         assert!(p.label.contains("My Contract"));
         assert_eq!(p.rule_triggered, "TestWebhook");
+    }
+
+    #[tokio::test]
+    async fn version_header_is_present_on_every_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .and(header("X-TxWatch-Version", env!("CARGO_PKG_VERSION")))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/hook", server.uri());
+        let result = send_webhook(&client, &url, &sample_payload(), None).await;
+        assert!(result.is_ok());
     }
 }

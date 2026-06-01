@@ -10,8 +10,7 @@ serde_json    = { workspace = true }
 anyhow        = { workspace = true }
 tokio         = { workspace = true }
 tracing       = { workspace = true }
-chrono        = { workspace = true }
 
 [dev-dependencies]
-wiremock      = { workspace = true }
+wiremock      = "0.6"
 tokio         = { workspace = true }
