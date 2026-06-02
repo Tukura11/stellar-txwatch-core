@@ -3,9 +3,12 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_path_to_error::Deserializer as PathDeserializer;
 use std::{fmt, fs, path::Path};
+use url::Url;
+
+const MAX_LARGE_TRANSFER_THRESHOLD_XLM: u64 = 1_000_000_000;
 
 // ── Network ───────────────────────────────────────────────────────────────────
 
@@ -90,6 +93,13 @@ impl AlertRule {
                         contract_label
                     );
                 }
+                if *threshold_xlm > MAX_LARGE_TRANSFER_THRESHOLD_XLM {
+                    bail!(
+                        "contract '{}': LargeTransfer threshold_xlm must be <= {}",
+                        contract_label,
+                        MAX_LARGE_TRANSFER_THRESHOLD_XLM
+                    );
+                }
             }
             AlertRule::FunctionCalled { function_name } => {
                 if function_name.trim().is_empty() {
@@ -146,7 +156,28 @@ impl AlertRule {
         }
         Ok(())
     }
-}
+    pub fn label(&self) -> String {
+        match self {
+            AlertRule::AnyTransaction => "AnyTransaction".into(),
+            AlertRule::TransactionFailed => "TransactionFailed".into(),
+            AlertRule::LargeTransfer { threshold_xlm } => {
+                format!("LargeTransfer(>={}XLM)", threshold_xlm)
+            }
+            AlertRule::FunctionCalled { function_name } => {
+                format!("FunctionCalled({})", function_name)
+            }
+            AlertRule::AdminFunctionCalled { function_names } => {
+                format!("AdminFunctionCalled([{}])", function_names.join(", "))
+            }
+            AlertRule::HighFee { threshold_stroops, threshold_xlm } => {
+                if let Some(xlm) = threshold_xlm {
+                    format!("HighFee(>={} XLM)", xlm)
+                } else {
+                    format!("HighFee(>={} stroops)", threshold_stroops)
+                }
+            }
+        }
+    }}
 
 // ── WatchedContract ───────────────────────────────────────────────────────────
 
@@ -434,6 +465,18 @@ mod tests {
         let mut c = valid_contract();
         c.rules = vec![AlertRule::LargeTransfer { threshold_xlm: 0 }];
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_too_large_large_transfer_threshold() {
+        let mut c = valid_contract();
+        c.rules = vec![AlertRule::LargeTransfer {
+            threshold_xlm: MAX_LARGE_TRANSFER_THRESHOLD_XLM + 1,
+        }];
+        let err = c.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("LargeTransfer threshold_xlm must be <="));
     }
 
     #[test]

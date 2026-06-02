@@ -364,6 +364,15 @@ mod tests {
     }
 
     #[test]
+    fn large_transfer_overflow_is_handled_gracefully() {
+        let tx = make_tx(true, &[], Some(1_000_000_000_000_000));
+        let payloads = run(&[AlertRule::LargeTransfer {
+            threshold_xlm: u64::MAX,
+        }], &tx);
+        assert!(payloads.is_empty(), "overflowing LargeTransfer thresholds should not panic");
+    }
+
+    #[test]
     fn large_transfer_fires_at_exact_threshold() {
         let tx = make_tx(true, &[], Some(10_000 * 10_000_000));
         let payloads = run(&[AlertRule::LargeTransfer { threshold_xlm: 10_000 }], &tx);

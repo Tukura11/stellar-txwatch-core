@@ -627,6 +627,69 @@ async fn run_polls_once_and_skips_webhook_in_dry_run() {
     // MockServer drop verifies that 0 webhooks were received.
 }
 
+/// End-to-end LargeTransfer poll, webhook payload, and cursor advancement.
+#[tokio::test]
+async fn large_transfer_poll_fires_webhook_and_advances_cursor() {
+    let horizon = MockServer::start().await;
+    let receiver = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions.*"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(helpers::tx_page("large_tx", "1", true)),
+        )
+        .up_to_n_times(1)
+        .mount(&horizon)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(helpers::empty_page()))
+        .mount(&horizon)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/transactions/large_tx/operations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(helpers::payment_ops_page("5000.0000000")))
+        .mount(&horizon)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&receiver)
+        .await;
+
+    let mut contract = helpers::contract(
+        &format!("{}/hook", receiver.uri()),
+        vec![AlertRule::LargeTransfer { threshold_xlm: 1000 }],
+    );
+    contract.horizon_base_url_override = Some(horizon.uri());
+
+    let cfg = AppConfig {
+        poll_interval_seconds: 1,
+        contracts: vec![contract],
+        http_pool_max_idle_per_host: None,
+        http_tcp_keepalive_secs: None,
+        http_connection_verbose: None,
+    };
+
+    let _ = tokio::time::timeout(Duration::from_millis(1500), txwatch_poller::run(cfg)).await;
+
+    let webhook_requests = receiver.received_requests().await.unwrap();
+    assert_eq!(webhook_requests.len(), 1, "expected exactly one webhook POST");
+
+    let body: serde_json::Value = serde_json::from_slice(&webhook_requests[0].body).expect("webhook body is JSON");
+    assert_eq!(body["rule_type"].as_str(), Some("LargeTransfer"));
+    assert_eq!(body["rule_triggered"].as_str(), Some("LargeTransfer(>=1000XLM)"));
+    assert_eq!(body["amount_xlm"].as_u64(), Some(5000));
+
+    let requests = horizon.received_requests().await.unwrap();
+    assert!(requests.iter().any(|r| r.url.contains("cursor=1")),
+        "expected the second Horizon transaction request to advance the cursor to '1'");
+}
+
 /// horizon_link in webhook payloads always points to the canonical Horizon URL
 /// even when polling against a mock server (horizon_base_url_override set). Closes #92.
 #[tokio::test]
