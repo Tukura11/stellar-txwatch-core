@@ -36,6 +36,10 @@ webhook_url = "https://hooks.example.com/vault-webhook"
 # Each [[contracts]] block is independent: rules, webhook_url, and network settings
 # apply only to that contract. You can define different webhook receivers and alert
 # rules per contract, even if they share the same network.
+# Example: HighFee rule (threshold in stroops)
+#  [[contracts.rules]]
+#  type               = "HighFee"
+#  threshold_stroops  = 100000
 [[contracts]]
 label       = "Mainnet Bridge Gateway"
 # Replace with your actual Soroban contract address (56 characters, starts with 'C')

@@ -67,6 +67,7 @@ async fn run_polls_once_and_fires_webhook() {
     let cfg = AppConfig {
         poll_interval_seconds: 1,
         contracts: vec![contract],
+        cursor_file: None,
         http_pool_max_idle_per_host: None,
         http_tcp_keepalive_secs: None,
         http_connection_verbose: None,
@@ -76,6 +77,97 @@ async fn run_polls_once_and_fires_webhook() {
     let _ = tokio::time::timeout(Duration::from_millis(1500), txwatch_poller::run(cfg)).await;
 
     // MockServer drop verifies that exactly 1 webhook was received.
+}
+
+#[tokio::test]
+async fn poll_includes_fee_charged_and_fires_high_fee_rule() {
+    let horizon = MockServer::start().await;
+    let receiver = MockServer::start().await;
+
+    // Horizon: transaction with fee_charged: "50000" (stroops)
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "_embedded": {
+                "records": [{
+                    "hash":         "fee_tx_poll",
+                    "created_at":   "2024-06-01T10:00:00Z",
+                    "successful":   true,
+                    "paging_token": "1",
+                    "fee_charged":  "50000",
+                    "envelope_xdr": null,
+                    "result_xdr":   null
+                }]
+            }
+        })))
+        .mount(&horizon)
+        .await;
+
+    // Operations for that tx: empty
+    Mock::given(method("GET"))
+        .and(path("/transactions/fee_tx_poll/operations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(helpers::empty_page()))
+        .mount(&horizon)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&receiver)
+        .await;
+
+    let mut contract = helpers::contract(&format!("{}/hook", receiver.uri()), vec![
+        AlertRule::HighFee { threshold_stroops: 10_000, threshold_xlm: None },
+    ]);
+    contract.horizon_base_url_override = Some(horizon.uri());
+
+    let cfg = AppConfig {
+        poll_interval_seconds: 1,
+        contracts: vec![contract],
+        cursor_file: None,
+        http_pool_max_idle_per_host: None,
+        http_tcp_keepalive_secs: None,
+        http_connection_verbose: None,
+    };
+
+    let _ = tokio::time::timeout(Duration::from_millis(1500), txwatch_poller::run(cfg)).await;
+}
+
+#[tokio::test]
+async fn cursor_file_is_loaded_and_used_for_initial_cursor() {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let horizon = MockServer::start().await;
+    let receiver = MockServer::start().await;
+
+    // Expect the poll request to include cursor=100 (the persisted value).
+    Mock::given(method("GET"))
+        .and(path_regex("/accounts/.*/transactions.*cursor=100.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(helpers::empty_page()))
+        .mount(&horizon)
+        .await;
+
+    let mut contract = helpers::contract(&format!("{}/hook", receiver.uri()), vec![AlertRule::AnyTransaction]);
+    contract.horizon_base_url_override = Some(horizon.uri());
+
+    // Create a temporary cursor file with the contract_id -> "100" mapping.
+    let tmp = std::env::temp_dir().join("txwatch_test_cursor.json");
+    let mapping = serde_json::json!({ contract.contract_id.clone(): "100" });
+    let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&tmp).unwrap();
+    write!(f, "{}", mapping.to_string()).unwrap();
+
+    let cfg = AppConfig {
+        poll_interval_seconds: 1,
+        contracts: vec![contract],
+        cursor_file: Some(tmp.to_string_lossy().to_string()),
+        http_pool_max_idle_per_host: None,
+        http_tcp_keepalive_secs: None,
+        http_connection_verbose: None,
+    };
+
+    let _ = tokio::time::timeout(Duration::from_millis(1500), txwatch_poller::run(cfg)).await;
 }
 
 /// AnyTransaction rule fires and webhook is called exactly once.
@@ -526,6 +618,7 @@ async fn run_polls_once_and_skips_webhook_in_dry_run() {
     let cfg = AppConfig {
         poll_interval_seconds: 1,
         contracts: vec![contract],
+        cursor_file: None,
     };
 
     // Drive the loop for one full poll cycle (slightly more than the interval).
@@ -579,6 +672,7 @@ async fn horizon_link_uses_canonical_url_not_mock_server() {
     let cfg = AppConfig {
         poll_interval_seconds: 1,
         contracts: vec![contract],
+        cursor_file: None,
         http_pool_max_idle_per_host: None,
         http_tcp_keepalive_secs: None,
         http_connection_verbose: None,
@@ -678,6 +772,7 @@ async fn contracts_polled_concurrently() {
         http_pool_max_idle_per_host: None,
         http_tcp_keepalive_secs: None,
         http_connection_verbose: None,
+        cursor_file: None,
     };
 
     let start = std::time::Instant::now();
