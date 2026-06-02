@@ -230,6 +230,12 @@ pub const MAX_CONTRACTS: usize = 100;
 pub struct AppConfig {
     pub poll_interval_seconds: u64,
     pub contracts: Vec<WatchedContract>,
+    /// Optional path to a JSON file used to persist the cursor map across restarts.
+    /// When set, the poller will load cursors from this file on startup and write
+    /// the updated cursor map after each poll cycle. If absent, cursors default
+    /// to the Horizon keyword `now` and are not persisted.
+    #[serde(default)]
+    pub cursor_file: Option<String>,
     /// Maximum number of idle connections per host in the HTTP connection pool.
     /// Lower values reduce memory usage; higher values improve throughput for many contracts.
     /// Default: 10.
@@ -507,6 +513,7 @@ mod tests {
             http_pool_max_idle_per_host: None,
             http_tcp_keepalive_secs: None,
             http_connection_verbose: None,
+            cursor_file: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("duplicate contract label"));
@@ -522,6 +529,7 @@ mod tests {
             http_pool_max_idle_per_host: None,
             http_tcp_keepalive_secs: None,
             http_connection_verbose: None,
+            cursor_file: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(

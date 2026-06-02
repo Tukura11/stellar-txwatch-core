@@ -11,6 +11,8 @@ use std::{
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json;
+use std::fs;
 use tracing::{debug, error, info, warn};
 use txwatch_config::{AppConfig, WatchedContract};
 use txwatch_notifier::send_webhook;
@@ -79,11 +81,39 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
         .build()
         .context("failed to build HTTP client")?;
 
-    let mut cursors: HashMap<String, String> = cfg
-        .contracts
-        .iter()
-        .map(|c| (c.contract_id.clone(), "now".to_string()))
-        .collect();
+    let mut cursors: HashMap<String, String> = if let Some(path) = &cfg.cursor_file {
+        match fs::read_to_string(path) {
+            Ok(raw) => match serde_json::from_str::<HashMap<String, String>>(&raw) {
+                Ok(mut map) => {
+                    // Ensure every configured contract has a cursor entry.
+                    for c in &cfg.contracts {
+                        map.entry(c.contract_id.clone())
+                            .or_insert_with(|| "now".to_string());
+                    }
+                    map
+                }
+                Err(e) => {
+                    warn!(error = ?e, "failed to parse cursor_file; starting from 'now' for all contracts");
+                    cfg.contracts
+                        .iter()
+                        .map(|c| (c.contract_id.clone(), "now".to_string()))
+                        .collect()
+                }
+            },
+            Err(e) => {
+                debug!(error = ?e, "could not read cursor_file; starting from 'now'");
+                cfg.contracts
+                    .iter()
+                    .map(|c| (c.contract_id.clone(), "now".to_string()))
+                    .collect()
+            }
+        }
+    } else {
+        cfg.contracts
+            .iter()
+            .map(|c| (c.contract_id.clone(), "now".to_string()))
+            .collect()
+    };
 
     let interval = Duration::from_secs(cfg.poll_interval_seconds);
     let summary_every = Duration::from_secs(60);
@@ -180,6 +210,18 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
                 Err(join_err) => {
                     error!(error = %join_err, "contract polling task panicked");
                 }
+            }
+        }
+
+        // Persist cursors after a poll cycle so restarts resume correctly.
+        if let Some(path) = &cfg.cursor_file {
+            match serde_json::to_string_pretty(&cursors) {
+                Ok(s) => {
+                    if let Err(e) = fs::write(path, s) {
+                        warn!(error = ?e, "failed to write cursor_file");
+                    }
+                }
+                Err(e) => warn!(error = ?e, "failed to serialize cursor map for persistence"),
             }
         }
 
