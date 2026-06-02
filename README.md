@@ -169,6 +169,7 @@ webhook_url = "https://hooks.example.com/my-webhook"
 | `LargeTransfer` | Payment amount ≥ `threshold_xlm` XLM |
 | `FunctionCalled` | A specific Soroban function is invoked |
 | `AdminFunctionCalled` | Any function in a named list is invoked |
+| `HighFee` | Transaction fee exceeds configured threshold |
 
 See [docs/alert-rules.md](docs/alert-rules.md) for full details.
 
@@ -185,11 +186,13 @@ See [docs/alert-rules.md](docs/alert-rules.md) for full details.
   "rule_triggered":   "LargeTransfer(>=10000XLM)",
   "transaction_hash": "abc123...",
   "function_name":    "transfer",
+  "function_names":   ["transfer"],
   "amount_xlm":       15000,
   "fee_charged_stroops": 50000,
   "timestamp":        1705316096,
   "timestamp_iso":    "2024-01-15T12:00:00Z",
-  "horizon_link":     "https://horizon-testnet.stellar.org/transactions/abc123..."
+  "horizon_link":     "https://horizon-testnet.stellar.org/transactions/abc123...",
+  "explorer_link":    "https://stellar.expert/explorer/testnet/tx/abc123..."
 }
 ```
 
@@ -197,17 +200,17 @@ See [docs/alert-rules.md](docs/alert-rules.md) for full details.
 - `Content-Type: application/json`
 - `Content-Length: <length of JSON body in bytes>`
 - `X-TxWatch-Version: <package version>`
-- `X-TxWatch-Secret: <secret>` (optional, only when configured)
+- `X-TxWatch-Signature: sha256=<hmac>` (optional, only when `webhook_secret` is configured — HMAC-SHA256 of the request body)
 
 **Fields:**
 - `rule_type` — stable machine-readable rule variant (e.g. `"LargeTransfer"`, `"HighFee"`); use this for programmatic routing
 - `rule_triggered` — human-readable rule description with parameters (e.g. `"LargeTransfer(>=10000XLM)"`); use this for display
 - `function_name` — the first invoked Soroban function name, or `null` for non-Soroban transactions.
-- `horizon_link` — direct URL to the transaction on Horizon; always present for every alert.
-- `explorer_link` — Stellar Expert explorer URL for the transaction; always present even for non-Soroban transactions.
+- `function_names` — all invoked Soroban function names in the transaction (may contain multiple entries for multi-op transactions).
+- `horizon_link` — direct Horizon REST API URL for the transaction (e.g. `https://horizon-testnet.stellar.org/transactions/<hash>`); useful for fetching raw XDR or operation details programmatically.
+- `explorer_link` — Stellar Expert web explorer URL for the transaction (e.g. `https://stellar.expert/explorer/testnet/tx/<hash>`); useful for human-readable inspection in a browser.
 
-`horizon_link` is a direct URL to the transaction on Horizon — paste it into a browser
-or the [Stellar Expert explorer](https://stellar.expert) to inspect the full XDR.
+> **`horizon_link` vs `explorer_link`**: `horizon_link` points to the Horizon REST API endpoint and returns raw JSON — useful for programmatic access. `explorer_link` points to the [Stellar Expert](https://stellar.expert) web UI — useful for human inspection. Both are always present for every alert regardless of rule type.
 
 ---
 
@@ -245,6 +248,35 @@ TxWatch uses `tracing` spans to correlate work across each poll cycle and webhoo
 - `txwatch-notifier::send_webhook` creates a span with `contract` and `rule` fields before sending the webhook request.
 
 Set `RUST_LOG=info` or a more specific filter to view structured tracing output in the CLI.
+
+### Prometheus metrics (optional)
+
+Build with the `metrics` feature to expose Prometheus counters and an HTTP `/metrics` endpoint:
+
+```bash
+cargo build -p txwatch-poller --features metrics
+```
+
+Three counters are registered:
+
+| Counter | Description |
+|---|---|
+| `txwatch_transactions_total` | Total Stellar transactions processed across all watched contracts |
+| `txwatch_alerts_total` | Total alert payloads sent (rules matched) |
+| `txwatch_webhook_failures_total` | Total permanent webhook delivery failures (after all retries) |
+
+To start the `/metrics` endpoint, call `txwatch_poller::serve_metrics(addr)` before `run_with`.
+The endpoint serves the standard Prometheus text exposition format and can be scraped by any
+Prometheus-compatible monitoring stack (Prometheus, Grafana Agent, VictoriaMetrics, etc.).
+
+Example scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: txwatch
+    static_configs:
+      - targets: ['localhost:9090']
+```
 
 ---
 

@@ -571,6 +571,28 @@ mod tests {
         assert_eq!(enriched.timestamp.year(), 2024);
     }
 
+    /// Issue #65: from_horizon must return Err when created_at is not a valid RFC 3339 timestamp.
+    #[test]
+    fn from_horizon_rejects_invalid_timestamp() {
+        let raw = HorizonTransaction {
+            hash:         "badhash".into(),
+            created_at:   "not-a-timestamp".into(),
+            successful:   true,
+            paging_token: "1".into(),
+            fee_charged:  None,
+            envelope_xdr: None,
+            result_xdr:   None,
+        };
+        let result = EnrichedTransaction::from_horizon(raw, vec![], None, None);
+        assert!(result.is_err(), "expected Err for invalid timestamp");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("cannot parse timestamp"),
+            "error message should mention 'cannot parse timestamp', got: {}",
+            msg
+        );
+    }
+
     // ── Issue #77: multiple invoke_host_function ops ──────────────────────────
 
     #[test]

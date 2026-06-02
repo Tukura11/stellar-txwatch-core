@@ -1,0 +1,112 @@
+//! Prometheus metrics for TxWatch (enabled with the `metrics` feature flag).
+//!
+//! Exposes three counters:
+//! - `txwatch_transactions_total`       — total transactions processed
+//! - `txwatch_alerts_total`             — total alert payloads sent (rules matched)
+//! - `txwatch_webhook_failures_total`   — total permanent webhook delivery failures
+//!
+//! An optional HTTP `/metrics` endpoint can be started by calling [`serve_metrics`].
+//! It serves the Prometheus text exposition format on the configured bind address.
+
+use anyhow::{Context, Result};
+use prometheus::{register_int_counter, IntCounter};
+use std::{net::SocketAddr, sync::OnceLock};
+
+use http_body_util::Full;
+use hyper::{body::Bytes, Request, Response};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
+
+// ── Counters ──────────────────────────────────────────────────────────────────
+
+fn transactions_total() -> &'static IntCounter {
+    static C: OnceLock<IntCounter> = OnceLock::new();
+    C.get_or_init(|| {
+        register_int_counter!(
+            "txwatch_transactions_total",
+            "Total Stellar transactions processed across all watched contracts"
+        )
+        .expect("register txwatch_transactions_total")
+    })
+}
+
+fn alerts_total() -> &'static IntCounter {
+    static C: OnceLock<IntCounter> = OnceLock::new();
+    C.get_or_init(|| {
+        register_int_counter!(
+            "txwatch_alerts_total",
+            "Total alert payloads sent (rules matched)"
+        )
+        .expect("register txwatch_alerts_total")
+    })
+}
+
+fn webhook_failures_total() -> &'static IntCounter {
+    static C: OnceLock<IntCounter> = OnceLock::new();
+    C.get_or_init(|| {
+        register_int_counter!(
+            "txwatch_webhook_failures_total",
+            "Total permanent webhook delivery failures (after all retries)"
+        )
+        .expect("register txwatch_webhook_failures_total")
+    })
+}
+
+/// Increment the `txwatch_transactions_total` counter by `n`.
+pub fn inc_transactions(n: u64) {
+    transactions_total().inc_by(n);
+}
+
+/// Increment the `txwatch_alerts_total` counter by `n`.
+pub fn inc_alerts(n: u64) {
+    alerts_total().inc_by(n);
+}
+
+/// Increment the `txwatch_webhook_failures_total` counter by 1.
+pub fn inc_webhook_failures() {
+    webhook_failures_total().inc();
+}
+
+// ── /metrics HTTP endpoint ────────────────────────────────────────────────────
+
+/// Serve the Prometheus `/metrics` endpoint on `addr`.
+/// Spawns a background task and returns immediately.
+pub async fn serve_metrics(addr: SocketAddr) -> Result<()> {
+    let listener = TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("failed to bind metrics endpoint on {}", addr))?;
+
+    tracing::info!(addr = %addr, "Prometheus /metrics endpoint listening");
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                continue;
+            };
+            let io = TokioIo::new(stream);
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, hyper::service::service_fn(handle_metrics))
+                    .await;
+            });
+        }
+    });
+
+    Ok(())
+}
+
+async fn handle_metrics(
+    _req: Request<hyper::body::Incoming>,
+) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    use prometheus::Encoder;
+    let encoder = prometheus::TextEncoder::new();
+    let mut buf = Vec::new();
+    encoder
+        .encode(&prometheus::gather(), &mut buf)
+        .unwrap_or_default();
+    Ok(Response::builder()
+        .status(200)
+        .header("Content-Type", encoder.format_type())
+        .body(Full::new(Bytes::from(buf)))
+        .unwrap())
+}

@@ -6,7 +6,7 @@ Config is a TOML file passed via `--config` (default: `config/example.toml`).
 
 | Field                   | Type | Required | Description                           |
 |-------------------------|------|----------|---------------------------------------|
-| `poll_interval_seconds` | u64  | yes      | How often to poll Horizon (seconds). Must be > 0 and ≤ 3600. |
+| `poll_interval_seconds` | u64  | yes      | How often to poll Horizon (seconds). Must be >= 5 and ≤ 3600. |
 
 > **Horizon rate limits:** Polling too frequently across many contracts can exhaust Horizon's per-IP request quota,
 > resulting in `429 Too Many Requests` responses. Sustained polling across six or more contracts at intervals below
@@ -27,7 +27,7 @@ Each entry defines one watched Soroban contract. At least one entry is required.
 | `contract_id` | string | yes      | Stellar C-address (56 chars, starts with `C`).               |
 | `network`     | string | yes      | `mainnet`, `testnet`, or `futurenet`.                        |
 | `webhook_url` | string | yes      | `http://` or `https://` endpoint that receives alert JSON.   |
-| `webhook_secret` | string | no    | If set, sent as `X-TxWatch-Secret` header on every POST.     |
+| `webhook_secret` | string | no    | If set, an HMAC-SHA256 signature of the request body is sent as `X-TxWatch-Signature: sha256=<hmac>`. Never sends the raw secret over the wire. |
 
 ### Network field values
 
